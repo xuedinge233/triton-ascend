@@ -44,6 +44,8 @@ extensions = [
     'myst_parser',
 ]
 
+myst_heading_anchors = 4
+
 autosummary_generate = True
 
 # Add any paths that contain templates here, relative to this directory.
@@ -58,7 +60,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # for a list of supported languages.
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = 'zh'
+language = 'en'
 
 # The name of the Pygments (syntax highlighting) style to use
 pygments_style = 'sphinx'
@@ -70,12 +72,12 @@ html_theme = "sphinx_rtd_theme"
 html_theme_options = {}
 
 # Passed to Jinja templates (see _templates/breadcrumbs.html) so the language
-# link can target the equivalent page under /en/. RTD injects the version
+# link can target the equivalent page under /zh-cn/. RTD injects the version
 # slug via READTHEDOCS_VERSION at build time; defaults to "latest" locally.
 html_context = {
     "rtd_version": os.environ.get("READTHEDOCS_VERSION", "latest"),
-    "other_lang_prefix": "/en/",
-    "other_lang_label": "English",
+    "other_lang_prefix": "/zh-cn/",
+    "other_lang_label": "中文",
 }
 
 html_static_path = ["_static"]
