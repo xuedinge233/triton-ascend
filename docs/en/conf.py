@@ -42,7 +42,7 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.autosectionlabel',
     'myst_parser',
-    ]
+]
 
 myst_heading_anchors = 4
 
