@@ -1,0 +1,286 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="zh" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>triton.language.randint &mdash; Triton Ascend  文档</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=37aeeb0d" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2ccfc426"></script>
+      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../_static/lang_switcher.js?v=d90500dc"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="索引" href="../../genindex.html" />
+    <link rel="search" title="搜索" href="../../search.html" />
+    <link rel="next" title="triton.language.rand" href="rand.html" />
+    <link rel="prev" title="triton.language.randint4x" href="randint4x.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            Triton Ascend
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="搜索文档" aria-label="搜索文档" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="导航菜单">
+              <p class="caption" role="heading"><span class="caption-text">快速开始</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../quick_start.html">快速入门</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">安装指南</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../installation_guide.html">安装指南</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">架构设计与核心特性</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../architecture_design_and_core_features.html">架构设计与核心特性</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Triton 算子开发指南</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../programming_guide.html">Triton算子开发指南</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Triton 算子迁移指南</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../migration_guide/architecture_difference.html">昇腾与GPU的开发差异</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../migration_guide/migrate_from_gpu.html">GPU Triton算子迁移</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">算子调试与调优</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../debug_guide/debugging.html">Triton-Ascend 调试指南</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../debug_guide/profiling.html">Triton-Ascend 性能分析方法</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Triton API 接口说明</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">triton.language</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../index.html#api">昇腾拓展API列表</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id1">原子操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id2">比较操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id3">编译器提示操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id4">创建操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id5">调试操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id6">索引与元素操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id7">内联汇编</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id8">迭代器</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id9">线性代数操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id10">逻辑操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id11">数学操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id12">内存/指针操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id13">编程模型</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../index.html#id14">随机数生成</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="randint4x.html">triton.language.randint4x</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">triton.language.randint</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#op">1. OP 概述</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id1">2. OP 规格</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="rand.html">triton.language.rand</a></li>
+<li class="toctree-l3"><a class="reference internal" href="randn.html">triton.language.randn</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id15">归约操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#id16">扫描/排序操作</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../index.html#shape">Shape操作</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../triton/index.html">triton</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">常见问题</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../FAQ.html">Triton-Ascend FAQ</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="移动版导航菜单" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">Triton Ascend</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="页面导航">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">triton.language</a></li>
+      <li class="breadcrumb-item active">triton.language.randint</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/triton_api/Random_Number_Generation/randint.md.txt" rel="nofollow"> 查看页面源码</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="triton-language-randint">
+<h1>triton.language.randint<a class="headerlink" href="#triton-language-randint" title="链接到此标题。"></a></h1>
+<section id="op">
+<h2>1. OP 概述<a class="headerlink" href="#op" title="链接到此标题。"></a></h2>
+<p>简介：给定 1 个 seed 标量和 1 个 offset 块，返回 1 个 int32 类型的随机块。
+原型：</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">triton</span><span class="o">.</span><span class="n">language</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span>
+ <span class="n">seed</span><span class="p">,</span> 
+ <span class="n">offset</span><span class="p">,</span> 
+ <span class="n">n_rounds</span><span class="p">:</span> <span class="n">constexpr</span> <span class="o">=</span> <span class="mi">10</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>如果需要多个随机数流，使用 randint4x 可能比连续调用 4 次 randint 更快。</p>
+</section>
+<section id="id1">
+<h2>2. OP 规格<a class="headerlink" href="#id1" title="链接到此标题。"></a></h2>
+<section id="id2">
+<h3>2.1 参数说明<a class="headerlink" href="#id2" title="链接到此标题。"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>参数名</p></th>
+<th class="head"><p>类型</p></th>
+<th class="head"><p>说明</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">int</span></code>或 <code class="docutils literal notranslate"><span class="pre">tensor</span></code></p></td>
+<td><p>用于生成随机数的种子</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">offset</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">int</span></code>或 <code class="docutils literal notranslate"><span class="pre">tensor</span></code></p></td>
+<td><p>用于生成随机数的偏移量</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">n_rounds</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">constexpr</span></code>，默认值为10</p></td>
+<td><p>Philox 算法的迭代轮数</p></td>
+</tr>
+</tbody>
+</table>
+<p>返回值：
+1 个 int32 类型的随机块，shape与offset相同</p>
+</section>
+<section id="id3">
+<h3>2.2 支持规格<a class="headerlink" href="#id3" title="链接到此标题。"></a></h3>
+<section id="datatype">
+<h4>2.2.1 DataType 支持<a class="headerlink" href="#datatype" title="链接到此标题。"></a></h4>
+<p>输入seed的type：</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>int8</p></th>
+<th class="head"><p>int16</p></th>
+<th class="head"><p>int32</p></th>
+<th class="head"><p>uint8</p></th>
+<th class="head"><p>uint16</p></th>
+<th class="head"><p>uint32</p></th>
+<th class="head"><p>uint64</p></th>
+<th class="head"><p>int64</p></th>
+<th class="head"><p>fp16</p></th>
+<th class="head"><p>fp32</p></th>
+<th class="head"><p>fp64</p></th>
+<th class="head"><p>bf16</p></th>
+<th class="head"><p>bool</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Ascend A2/A3</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>√</p></td>
+<td><p>×</p></td>
+<td><p>×</p></td>
+<td><p>×</p></td>
+<td><p>×</p></td>
+<td><p>√</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="shape">
+<h4>2.2.2 Shape 支持<a class="headerlink" href="#shape" title="链接到此标题。"></a></h4>
+<p>无特殊要求</p>
+</section>
+</section>
+<section id="id4">
+<h3>2.3 特殊限制说明<a class="headerlink" href="#id4" title="链接到此标题。"></a></h3>
+<blockquote>
+<div><p>相对社区能力缺失且无法实现</p>
+</div></blockquote>
+</section>
+<section id="id5">
+<h3>2.4 使用方法<a class="headerlink" href="#id5" title="链接到此标题。"></a></h3>
+<p>以下示例实现了对randint的调用（调用时生成单个随机数）：</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">kernel_randint</span><span class="p">(</span><span class="n">x_ptr</span><span class="p">,</span> <span class="n">n_rounds</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">N</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">XBLOCK</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">):</span>
+    <span class="n">block_offset</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span> <span class="o">*</span> <span class="n">XBLOCK</span>
+    <span class="n">block_size</span> <span class="o">=</span> <span class="n">XBLOCK</span> <span class="k">if</span> <span class="n">block_offset</span> <span class="o">+</span> <span class="n">XBLOCK</span> <span class="o">&lt;=</span> <span class="n">N</span> <span class="k">else</span> <span class="n">N</span> <span class="o">-</span> <span class="n">block_offset</span>
+    <span class="k">for</span> <span class="n">inner_idx</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">block_size</span><span class="p">):</span>
+        <span class="n">global_offset</span> <span class="o">=</span> <span class="n">block_offset</span> <span class="o">+</span> <span class="n">inner_idx</span>
+        <span class="n">rand_vals</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">10</span> <span class="o">+</span> <span class="n">global_offset</span><span class="p">,</span> <span class="n">n_rounds</span><span class="p">)</span> <span class="c1"># 对每个索引生成一个随机数</span>
+        <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">global_offset</span><span class="p">,</span> <span class="n">rand_vals</span><span class="p">)</span> <span class="c1"># 存储随机数</span>
+
+<span class="n">y_cali</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">eval</span><span class="p">(</span><span class="s1">&#39;torch.int32&#39;</span><span class="p">))</span><span class="o">.</span><span class="n">npu</span><span class="p">()</span>
+<span class="n">kernel_randint</span><span class="p">[</span><span class="n">ncore</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">](</span><span class="n">y_cali</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="n">numel</span><span class="p">,</span> <span class="n">xblock</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="页脚">
+        <a href="randint4x.html" class="btn btn-neutral float-left" title="triton.language.randint4x" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> 上一页</a>
+        <a href="rand.html" class="btn btn-neutral float-right" title="triton.language.rand" accesskey="n" rel="next">下一页 <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; 版权所有 2025, Huawei。</p>
+  </div>
+
+  利用 <a href="https://www.sphinx-doc.org/">Sphinx</a> 构建，使用的 
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">主题</a>
+    由 <a href="https://readthedocs.org">Read the Docs</a> 开发.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
