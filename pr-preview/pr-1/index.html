@@ -22,13 +22,19 @@
       padding: 2.5rem 3rem;
       text-align: center;
       box-shadow: 0 8px 32px rgba(0, 0, 0, .15);
+      min-width: 300px;
     }
     h1 { margin: 0 0 .5rem; font-size: 1.8rem; }
-    p { margin: 0 0 1.5rem; opacity: .9; }
-    .links { display: flex; gap: 1rem; justify-content: center; }
-    .links a {
-      display: inline-block;
-      padding: .65rem 1.4rem;
+    p { margin: 0 0 1.2rem; opacity: .9; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: .6rem;
+      margin-top: 1rem;
+    }
+    .grid a {
+      display: block;
+      padding: .6rem .9rem;
       border-radius: 6px;
       background: #fff;
       color: #2980b9;
@@ -36,29 +42,68 @@
       font-weight: 600;
       transition: transform .15s ease, box-shadow .15s ease;
     }
-    .links a:hover {
+    .grid a small { display: block; font-weight: 400; font-size: .8rem; opacity: .7; }
+    .grid a:hover {
       transform: translateY(-2px);
       box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
     }
+    .row { font-size: .85rem; opacity: .85; margin: .8rem 0 0; }
   </style>
-  <script>
-    // Auto-redirect based on browser locale; ?nopick=1 disables auto-redirect.
-    (function () {
-      if (window.location.search.indexOf('nopick') !== -1) return;
-      var lang = (navigator.language || 'en').toLowerCase();
-      var target = lang.indexOf('zh') === 0 ? 'zh' : 'en';
-      window.location.replace('./' + target + '/index.html');
-    })();
-  </script>
 </head>
 <body>
-  <div class="card">
+  <div class="card" id="card">
     <h1>Triton Ascend</h1>
-    <p>Choose your language / 选择文档语言</p>
-    <div class="links">
-      <a href="./zh/index.html">中文</a>
-      <a href="./en/index.html">English</a>
-    </div>
+    <p id="hint">Loading versions…</p>
+    <div class="grid" id="grid"></div>
   </div>
+  <script>
+    (function () {
+      var nopick = window.location.search.indexOf('nopick') !== -1;
+      var prefersZh = (navigator.language || 'en').toLowerCase().indexOf('zh') === 0;
+      var preferredLang = prefersZh ? 'zh' : 'en';
+
+      fetch('versions.json', { cache: 'no-cache' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
+        .then(function (data) {
+          var versions = (data && Array.isArray(data.versions))
+            ? data.versions.map(function (v) { return v.slug; })
+            : [];
+          var defaultSlug = data && data.default;
+
+          // Auto-redirect: pick default if it's deployed, otherwise first version.
+          if (!nopick) {
+            var pick = (defaultSlug && versions.indexOf(defaultSlug) !== -1)
+              ? defaultSlug
+              : versions[0];
+            if (pick) {
+              window.location.replace('./' + pick + '/' + preferredLang + '/index.html');
+              return;
+            }
+          }
+
+          // Render picker fallback.
+          var hint = document.getElementById('hint');
+          var grid = document.getElementById('grid');
+          if (!versions.length) {
+            hint.textContent = 'No documentation has been published yet.';
+            return;
+          }
+          hint.textContent = nopick
+            ? 'Pick a version and language:'
+            : 'Choose a version and language / 选择版本和语言:';
+
+          versions.forEach(function (slug) {
+            ['zh', 'en'].forEach(function (lang) {
+              var a = document.createElement('a');
+              a.href = './' + slug + '/' + lang + '/index.html';
+              a.innerHTML = (lang === 'zh' ? '中文' : 'English') +
+                '<small>' + slug + '</small>';
+              grid.appendChild(a);
+            });
+          });
+        });
+    })();
+  </script>
 </body>
 </html>
