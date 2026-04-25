@@ -3,9 +3,21 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
+  push:
+    paths:
+      - '.github/workflows/documentation.yml'
+      - 'docs/**'
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+    paths:
+      - '.github/workflows/documentation.yml'
+      - 'docs/**'
+
+concurrency: preview-${{ github.ref }}
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   Build-Documentation:
@@ -30,24 +42,45 @@ jobs:
         continue-on-error: true
 
       - name: Install dependent packages
-        run: make docs-requirements
+        if: github.event.action != 'closed'
+        run: python3 -m pip install -r docs/zh/requirement.txt
 
-      - name: Build docs
-        run: MAX_JOBS=4 make docs-only
+      - name: Build zh docs
+        if: github.event.action != 'closed'
+        run: python3 -m sphinx docs/zh docs/_build/html/zh
+
+      - name: Build en docs
+        if: github.event.action != 'closed'
+        run: python3 -m sphinx docs/en docs/_build/html/en
+
+      - name: Add landing page
+        if: github.event.action != 'closed'
+        run: cp docs/landing.html docs/_build/html/index.html
 
       - name: Update docs
+        if: github.event_name != 'pull_request'
         run: |
           mkdir /tmp/triton-docs/
-          mv docs/_build/html/* /tmp/triton-docs/
+          mv docs/_build/html/* docs/_build/html/.[!.]* /tmp/triton-docs/ 2>/dev/null || true
+          mv docs/_build/html/* /tmp/triton-docs/ 2>/dev/null || true
           git checkout gh-pages
-          cp -r index.html /tmp/triton-docs/
-          cp -r .nojekyll /tmp/triton-docs/
-          rm -rf *
-          cp -r /tmp/triton-docs/* .
-          git add .
+          [ -f .nojekyll ] && cp .nojekyll /tmp/triton-docs/ || touch /tmp/triton-docs/.nojekyll
+          rm -rf -- *
+          cp -r /tmp/triton-docs/. .
+          git add -A
           git config --global user.email "N/A"
           git config --global user.name "gh-actions-bot"
-          git commit -am "[GH-PAGES] Updated website"
+          git commit -am "[GH-PAGES] Updated website" || echo "no changes"
 
       - name: Publish docs
+        if: github.event_name != 'pull_request'
         run: git push origin gh-pages
+
+      - name: Deploy PR preview to gh-pages
+        if: github.event_name == 'pull_request'
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: docs/_build/html
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+          action: auto
