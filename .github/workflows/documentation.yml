@@ -4,10 +4,7 @@ on:
   schedule:
     - cron: "0 0 * * *"
   push:
-    branches:
-      - 'main'
-      - 'release/3.2.1'
-      - 'test-ph-pages'
+    branches: [release/3.2.1, main]
     paths:
       - '.github/workflows/documentation.yml'
       - 'docs/**'
