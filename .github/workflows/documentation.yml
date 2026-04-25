@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "0 0 * * *"
   push:
+    branches:
+      - 'main'
+      - 'release/3.2.1'
     paths:
       - '.github/workflows/documentation.yml'
       - 'docs/**'
@@ -41,17 +44,29 @@ jobs:
         run: rm -rf /tmp/triton-docs
         continue-on-error: true
 
+      - name: Compute version slug
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            REF="${{ github.base_ref }}"
+          else
+            REF="${{ github.ref_name }}"
+          fi
+          SLUG="${REF//\//-}"
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+          echo "Version slug: ${SLUG}"
+
       - name: Install dependent packages
         if: github.event.action != 'closed'
         run: python3 -m pip install -r docs/zh/requirement.txt
 
       - name: Build zh docs
         if: github.event.action != 'closed'
-        run: python3 -m sphinx docs/zh docs/_build/html/zh
+        run: python3 -m sphinx docs/zh "docs/_build/html/${{ steps.ver.outputs.slug }}/zh"
 
       - name: Build en docs
         if: github.event.action != 'closed'
-        run: python3 -m sphinx docs/en docs/_build/html/en
+        run: python3 -m sphinx docs/en "docs/_build/html/${{ steps.ver.outputs.slug }}/en"
 
       - name: Add landing page
         if: github.event.action != 'closed'
@@ -59,18 +74,41 @@ jobs:
 
       - name: Update docs
         if: github.event_name != 'pull_request'
+        env:
+          SLUG: ${{ steps.ver.outputs.slug }}
         run: |
           mkdir /tmp/triton-docs/
-          mv docs/_build/html/* docs/_build/html/.[!.]* /tmp/triton-docs/ 2>/dev/null || true
-          mv docs/_build/html/* /tmp/triton-docs/ 2>/dev/null || true
+          cp -r docs/_build/html/. /tmp/triton-docs/
           git checkout gh-pages
-          [ -f .nojekyll ] && cp .nojekyll /tmp/triton-docs/ || touch /tmp/triton-docs/.nojekyll
-          rm -rf -- *
-          cp -r /tmp/triton-docs/. .
+          # Wipe only this version's directory; preserve other versions.
+          rm -rf -- "${SLUG}"
+          mkdir -p "${SLUG}"
+          cp -r "/tmp/triton-docs/${SLUG}/." "${SLUG}/"
+          # Always refresh the root landing + .nojekyll.
+          cp /tmp/triton-docs/index.html ./index.html
+          [ -f .nojekyll ] || touch .nojekyll
+          # Maintain versions.json (keep "default" pinned to "main").
+          python3 - <<'PY'
+          import json, os
+          path = "versions.json"
+          slug = os.environ["SLUG"]
+          if os.path.exists(path):
+              with open(path) as f:
+                  data = json.load(f)
+              data.setdefault("versions", [])
+          else:
+              data = {"default": "main", "versions": []}
+          if not any(v.get("slug") == slug for v in data["versions"]):
+              data["versions"].append({"slug": slug})
+          data["default"] = "main"
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
           git add -A
           git config --global user.email "N/A"
           git config --global user.name "gh-actions-bot"
-          git commit -am "[GH-PAGES] Updated website" || echo "no changes"
+          git commit -m "[GH-PAGES] Updated ${SLUG}" || echo "no changes"
 
       - name: Publish docs
         if: github.event_name != 'pull_request'
