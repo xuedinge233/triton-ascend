@@ -7,6 +7,7 @@ on:
     branches:
       - 'main'
       - 'release/3.2.1'
+      - 'test-ph-pages'
     paths:
       - '.github/workflows/documentation.yml'
       - 'docs/**'
