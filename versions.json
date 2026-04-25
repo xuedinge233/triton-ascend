@@ -1,0 +1,8 @@
+{
+  "default": "main",
+  "versions": [
+    {
+      "slug": "test-ph-pages"
+    }
+  ]
+}

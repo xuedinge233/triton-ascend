@@ -1,0 +1,238 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Start &mdash; Triton Ascend  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/custom.css?v=37aeeb0d" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="_static/lang_switcher.js?v=f0954c5b"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Installation Guide" href="installation_guide.html" />
+    <link rel="prev" title="Triton Ascend" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            Triton Ascend
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Quick Start</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Quick Start</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#project-overview">Project Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#online-documents">Online Documents</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#environment-requirements">Environment Requirements</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#hardware-requirements">Hardware Requirements</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#software-dependency">Software Dependency</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#environment-setup">Environment Setup</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#obtaining-the-triton-ascend-software-package">Obtaining the Triton-Ascend Software Package</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#example-for-running-triton">Example for Running Triton</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Installation Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="installation_guide.html">Installation Guide</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture Design and Core Features</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="architecture_design_and_core_features.html">Architecture Design and Core Features</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Triton Operator Programming Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="programming_guide.html">Triton Operator Development Guide</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Triton Operator Migration Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="migration_guide/architecture_difference.html">Development Differences Between Ascend and GPUs</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_guide/migrate_from_gpu.html">Migrating Triton Operators from GPUs</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_guide/performance_guidelines.html">NPU High-Performance Programming Guide</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Example Operators</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/01_vector_add_example.html">Vector Addition</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/02_fused_softmax_example.html">Fused Softmax</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/03_layer_norm_example.html">Layer Normalization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/04_fused_attention_example.html">Fused Attention</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/05_matrix_multiplication_example.html">Matrix Multiplication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/06_autotune_example.html">Autotune</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/07_accuracy_comparison_example.html">Accuracy Comparison</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Operator Debugging and Profiling</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="debug_guide/debugging.html">Triton-Ascend Debugging Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="debug_guide/profiling.html">Triton-Ascend Performance Analysis Method</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Environment Variables</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="environment_variable_reference.html">Environment Variables</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">FAQ</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="FAQ.html">Triton-Ascend FAQ</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Release Note</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="release_note.html">Triton-Ascend Release</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">Triton Ascend</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Quick Start</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/quick_start.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="quick-start">
+<h1>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading"></a></h1>
+<section id="project-overview">
+<h2>Project Overview<a class="headerlink" href="#project-overview" title="Link to this heading"></a></h2>
+<p>Triton-Ascend is an optimized version of Triton that adapts to Huawei Ascend chips. It provides efficient automatic optimization of kernel functions, operator compilation, and deployment capabilities, and supports products such as Ascend Atlas A2/A3.
+While being compatible with the core syntax of Triton, Ascend is optimized for features of Ascend NPUs, including automatic parsing of kernel function parameters, memory access logic optimization, and security deployment mechanism optimization.</p>
+</section>
+<section id="online-documents">
+<h2>Online Documents<a class="headerlink" href="#online-documents" title="Link to this heading"></a></h2>
+<p>Complete online documents and network materials are provided, covering environment setup, operator development, optimization practices, and FAQ, to help you get started quickly. For details, see the <a class="reference external" href="https://triton-ascend.readthedocs.io/zh-cn/latest/index.html">online documents</a>.</p>
+</section>
+<section id="environment-requirements">
+<h2>Environment Requirements<a class="headerlink" href="#environment-requirements" title="Link to this heading"></a></h2>
+<section id="hardware-requirements">
+<h3>Hardware Requirements<a class="headerlink" href="#hardware-requirements" title="Link to this heading"></a></h3>
+<p>Supported OS: Linux (AArch64/x86_64)</p>
+<p>Supported Ascend products: Atlas A2/A3 series</p>
+<p>Minimum hardware configuration: single-device 32 GB graphics memory (recommended)</p>
+</section>
+<section id="software-dependency">
+<h3>Software Dependency<a class="headerlink" href="#software-dependency" title="Link to this heading"></a></h3>
+<p>Python (Python 3.9 to Python 3.11), CANN_TOOLKIT, CANN_OPS, <a class="reference download internal" download="" href="_downloads/0c266fb11e0c307794b7ea07d54b3bcd/requirements.txt"><span class="xref download myst">requirements.txt</span></a>, and <a class="reference download internal" download="" href="_downloads/31c159b317e0da098e1e725dbe3720b6/requirements_dev.txt"><span class="xref download myst">requirements_dev.txt</span></a></p>
+<p>For details about the CANN installation and configuration script, see <a class="reference external" href="https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&amp;amp;InstallType=local&amp;amp;OS=Ubuntu">CANN installation description</a>. Developers can select the CANN version, product series, CPU architecture, operating system, and installation method to find the corresponding installation commands.</p>
+<p>You need to select the required version (8.5.0 is recommended) based on the Ascend card model you use. The CANN installation takes about 5 to 10 minutes. Wait until the installation is complete.</p>
+<ul class="simple">
+<li><p>Note: If the user does not specify an installation path, the software will be installed to the default path as follows.
+For root user: <code class="docutils literal notranslate"><span class="pre">/usr/local/Ascend</span></code>
+For non-root user: <code class="docutils literal notranslate"><span class="pre">${HOME}/Ascend</span></code>, where <code class="docutils literal notranslate"><span class="pre">${HOME}</span></code> is the home directory of the current user.</p></li>
+</ul>
+<p>The environment variable configuration above takes effect only in the current terminal session.</p>
+<p>Users can add the command source <code class="docutils literal notranslate"><span class="pre">${HOME}/Ascend/ascend-toolkit/set_env.sh</span></code> to an environment variable configuration file (such as .bashrc) as needed.</p>
+<p>You can run the following command to install the requirements:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt<span class="w"> </span>-r<span class="w"> </span>requirements_dev.txt
+</pre></div>
+</div>
+</section>
+</section>
+<section id="environment-setup">
+<h2>Environment Setup<a class="headerlink" href="#environment-setup" title="Link to this heading"></a></h2>
+<p>You can set up the Triton-Ascend environment by referring to section “Preparing the Environment” in <a class="reference internal" href="installation_guide.html"><span class="std std-doc">Installation Guide</span></a>.</p>
+<section id="obtaining-the-triton-ascend-software-package">
+<h3>Obtaining the Triton-Ascend Software Package<a class="headerlink" href="#obtaining-the-triton-ascend-software-package" title="Link to this heading"></a></h3>
+<p>You can install the latest stable version package using the CLI.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>triton-ascend
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Note: Starting from version 3.5, Triton-Ascend mitigates the installation overwrite issue by declaring Triton as an installation dependency. When Triton-Ascend is installed, community Triton is installed first, and then Triton-Ascend overwrites the shared package directory. This helps avoid a later Triton reinstallation overwriting Triton-Ascend when other software packages that depend on Triton are installed. Different community Triton package versions are used for x86 and arm because arm installation packages are only available in the community starting from Triton 3.5: x86 depends on <code class="docutils literal notranslate"><span class="pre">triton==3.2.0</span></code>, and arm depends on <code class="docutils literal notranslate"><span class="pre">triton==3.5.0</span></code>.</p></li>
+<li><p>Note 1: This solution mitigates the installation overwrite issue, but it does not completely eliminate the conflict caused by community Triton and Triton-Ascend sharing the same top-level <code class="docutils literal notranslate"><span class="pre">triton</span></code> package directory. If a later installation explicitly reinstalls or upgrades community Triton, the installed Triton-Ascend may still be affected. In this case, uninstall both community Triton and Triton-Ascend first, and then reinstall Triton-Ascend.</p></li>
+</ul>
+<p>You can also download the nightly package from the <a class="reference external" href="https://test.pypi.org/project/triton-ascend/#history">download link</a> and install it locally.</p>
+<ul class="simple">
+<li><p>Note 2: If you download the nightly package for installation, select the Python version and architecture (AArch64/x86_64) of your server when selecting the Triton-Ascend package.</p></li>
+<li><p>Note 3: The nightly package is built every day. Developers submit MRs frequently. Note that if the package does not pass the stable test, function bugs may exist.</p></li>
+</ul>
+</section>
+</section>
+<section id="example-for-running-triton">
+<h2>Example for Running Triton<a class="headerlink" href="#example-for-running-triton" title="Link to this heading"></a></h2>
+<p>Run the <a class="reference internal" href="examples/01_vector_add_example.html"><span class="std std-doc">01-vector-add.py</span></a> instance.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).</span>
+<span class="nb">source</span><span class="w"> </span>/usr/local/Ascend/ascend-toolkit/set_env.sh
+<span class="c1"># Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://gitcode.com/Ascend/triton-ascend.git
+<span class="c1"># Run the tutorials example.</span>
+python3<span class="w"> </span>./triton-ascend/ascend/examples/tutorials/01-vector-add.py
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="Triton Ascend" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="installation_guide.html" class="btn btn-neutral float-right" title="Installation Guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Huawei.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
