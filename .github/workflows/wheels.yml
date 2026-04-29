@@ -1,28 +1,46 @@
 name: Wheels
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/wheels.yml
+  workflow_call:
   schedule:
     - cron: "0 8 * * *"
+  pull_request:
+    types: [closed]
 
-permissions: read-all
+concurrency:
+  group: wheels-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
+  Matrix-Prep:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            cat <<'EOF' >> "$GITHUB_OUTPUT"
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"}],"python":["cp311"]}
+          EOF
+          else
+            cat <<'EOF' >> "$GITHUB_OUTPUT"
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"},{"runs_on":"ubuntu-22.04-arm","arch":"aarch64"}],"python":["cp310","cp311","cp312","cp313"]}
+          EOF
+          fi
+
   Build-Wheels:
+    needs: Matrix-Prep
+    if: github.event.action != 'closed'
     timeout-minutes: 360
     runs-on: ${{ matrix.config.runs_on }}
 
     strategy:
       fail-fast: false
-      matrix:
-        config:
-        - {runs_on: 'ubuntu-22.04', arch: 'x86_64'}
-        - {runs_on: 'ubuntu-22.04-arm', arch: 'aarch64'}
-        python: ["cp310", "cp311", "cp312", "cp313"]
-
+      matrix: ${{ fromJSON(needs.Matrix-Prep.outputs.matrix) }}
 
     permissions:
       id-token: write
@@ -96,7 +114,6 @@ jobs:
           fi
 
           OBSUTIL_URL="https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}.tar.gz"
-          
           curl -fL "$OBSUTIL_URL" -o obsutil.tar.gz
 
           file obsutil.tar.gz | grep -q gzip || {
@@ -109,4 +126,37 @@ jobs:
           mv obsutil* obsutil
 
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
-          obsutil/obsutil cp -u wheelhouse/*.whl obs://triton-ascend-artifacts/triton-ascend/
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            DEST="obs://triton-ascend-artifacts/triton-ascend-pr/pr_${{ github.event.pull_request.number }}/"
+            # Manifest so consumers (e.g. the yellow pipeline) can resolve the
+            # wheel filename without listing the bucket.
+            basename wheelhouse/*.whl > wheelhouse/wheel-name.txt
+            obsutil/obsutil cp -u wheelhouse/wheel-name.txt "$DEST"
+          else
+            DEST="obs://triton-ascend-artifacts/triton-ascend/"
+          fi
+          obsutil/obsutil cp -u wheelhouse/*.whl "$DEST"
+
+  Clean-Wheels:
+    # Remove the PR's wheel directory from OBS when the PR closes (merged or
+    # not). Triggered by `pull_request: closed` on this workflow itself.
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove PR wheels from OBS
+        shell: bash
+        env:
+          AK: ${{ secrets.OBS_AK }}
+          SK: ${{ secrets.OBS_SK }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "${AK}" ] || [ -z "${SK}" ]; then
+            echo "OBS_AK / OBS_SK secrets not configured; skipping cleanup."
+            exit 0
+          fi
+          curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_amd64.tar.gz" -o obsutil.tar.gz
+          tar xzf obsutil.tar.gz
+          sudo mv obsutil_linux_*/obsutil /usr/local/bin/obsutil
+          obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
+          obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend-pr/pr_${PR_NUM}/" || true
