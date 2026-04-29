@@ -34,7 +34,7 @@ env:
   OBS_BUCKET: triton-ascend-artifacts
   OBS_PREVIEW_PREFIX: pr-preview
   OBS_ENDPOINT: https://obs.cn-southwest-2.myhuaweicloud.com
-  OBS_WEBSITE_BASE: https://triton-ascend-artifacts.obs.website.cn-southwest-2.myhuaweicloud.com
+  OBS_WEBSITE_BASE: https://triton.osinfra.cn
 
 jobs:
   deploy:
@@ -136,9 +136,17 @@ jobs:
         if: steps.obs-check.outputs.has_obs == 'true' && steps.meta.outputs.event == 'pull_request' && steps.meta.outputs.pr_action != 'closed'
         env:
           PR_NUM: ${{ steps.meta.outputs.pr_number }}
+          SLUG: ${{ steps.meta.outputs.slug }}
         run: |
-          obsutil rm -r -f "obs://${OBS_BUCKET}/${OBS_PREVIEW_PREFIX}/pr-${PR_NUM}/" || true
-          obsutil cp -r -f -u "artifact/_site/" "obs://${OBS_BUCKET}/${OBS_PREVIEW_PREFIX}/pr-${PR_NUM}/"
+          PREVIEW_PREFIX="obs://${OBS_BUCKET}/${OBS_PREVIEW_PREFIX}/pr-${PR_NUM}/"
+          # Synthesize a single-slug versions.json so the landing page can auto-redirect
+          # instead of showing "No documentation has been published yet."
+          printf '{"default":"%s","versions":[{"slug":"%s"}]}\n' "${SLUG}" "${SLUG}" \
+            > artifact/_site/versions.json
+          obsutil rm -r -f "${PREVIEW_PREFIX}" || true
+          obsutil cp -r -f -u -flat "artifact/_site/" "${PREVIEW_PREFIX}"
+          obsutil cp -f "artifact/_site/index.html"     "${PREVIEW_PREFIX}index.html"
+          obsutil cp -f "artifact/_site/versions.json"  "${PREVIEW_PREFIX}versions.json"
 
       - name: Cleanup PR preview from OBS
         if: steps.obs-check.outputs.has_obs == 'true' && steps.meta.outputs.event == 'pull_request' && steps.meta.outputs.pr_action == 'closed'
