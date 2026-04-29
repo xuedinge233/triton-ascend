@@ -13,10 +13,11 @@ name: Docs Preview
 #   - Workflow 1 stays strictly read-only; only this workflow ever touches
 #     secrets or pushes to OBS/GitHub Pages.
 #
-# Deploys to both OBS and GitHub Pages:
-#   - Push to release/main: deploys versioned docs to ${SLUG}/ on both platforms
-#   - PR preview: deploys only to OBS pr-preview/pr-${PR_NUM}/
-#   - PR closed: removes preview from OBS
+# Two destinations, different roles:
+#   - GitHub Pages: production-only. Push to release/main publishes versioned
+#     docs to ${SLUG}/ on the gh-pages branch.
+#   - OBS: PR previews only (no production mirror). Each PR push deploys to
+#     pr-preview/pr-${PR_NUM}/; closing the PR removes that preview.
 
 on:
   workflow_run:
@@ -30,9 +31,10 @@ permissions:
   pages: write
 
 env:
-  OBS_BUCKET: triton-ascend-docs
+  OBS_BUCKET: triton-ascend-artifacts
+  OBS_PREVIEW_PREFIX: pr-preview
   OBS_ENDPOINT: https://obs.cn-southwest-2.myhuaweicloud.com
-  OBS_WEBSITE_BASE: https://triton-ascend-docs.obs.website.cn-southwest-2.myhuaweicloud.com
+  OBS_WEBSITE_BASE: https://triton-ascend-artifacts.obs.website.cn-southwest-2.myhuaweicloud.com
 
 jobs:
   deploy:
@@ -73,8 +75,12 @@ jobs:
         env:
           SLUG: ${{ steps.meta.outputs.slug }}
         run: |
-          git clone --branch gh-pages --single-branch https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git gh-pages-repo || \
-            git init gh-pages-repo && cd gh-pages-repo && git checkout -b gh-pages && cd ..
+          REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          if ! git clone --branch gh-pages --single-branch "${REPO_URL}" gh-pages-repo; then
+            git init gh-pages-repo
+            git -C gh-pages-repo checkout -b gh-pages
+            git -C gh-pages-repo remote add origin "${REPO_URL}"
+          fi
           cd gh-pages-repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -100,7 +106,6 @@ jobs:
           PY
           git add -A
           git commit -m "docs: deploy ${SLUG}" || echo "No changes"
-          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git 2>/dev/null || true
           git push -u origin gh-pages --force
 
       - name: Check OBS credentials
@@ -127,52 +132,20 @@ jobs:
           sudo mv obsutil_linux_*/obsutil /usr/local/bin/obsutil
           obsutil config -i="${AK}" -k="${SK}" -e="${OBS_ENDPOINT}"
 
-      - name: Maintain versions.json (OBS)
-        if: steps.obs-check.outputs.has_obs == 'true' && steps.meta.outputs.event != 'pull_request'
-        env:
-          SLUG: ${{ steps.meta.outputs.slug }}
-        run: |
-          obsutil cp "obs://${OBS_BUCKET}/versions.json" ./versions.json 2>/dev/null \
-            || echo '{"default":"main","versions":[]}' > versions.json
-          python3 - <<'PY'
-          import json, os
-          path = "versions.json"
-          slug = os.environ["SLUG"]
-          with open(path) as f:
-              data = json.load(f)
-          data.setdefault("versions", [])
-          if not any(v.get("slug") == slug for v in data["versions"]):
-              data["versions"].append({"slug": slug})
-          data["default"] = "main"
-          with open(path, "w") as f:
-              json.dump(data, f, indent=2)
-              f.write("\n")
-          PY
-          obsutil cp -f versions.json "obs://${OBS_BUCKET}/versions.json"
-
-      - name: Deploy production version to OBS
-        if: steps.obs-check.outputs.has_obs == 'true' && steps.meta.outputs.event != 'pull_request'
-        env:
-          SLUG: ${{ steps.meta.outputs.slug }}
-        run: |
-          obsutil rm -r -f "obs://${OBS_BUCKET}/${SLUG}/" || true
-          obsutil cp -r -f -u "artifact/_site/${SLUG}/" "obs://${OBS_BUCKET}/${SLUG}/"
-          obsutil cp -f -u "artifact/_site/index.html" "obs://${OBS_BUCKET}/index.html"
-
       - name: Deploy PR preview to OBS
         if: steps.obs-check.outputs.has_obs == 'true' && steps.meta.outputs.event == 'pull_request' && steps.meta.outputs.pr_action != 'closed'
         env:
           PR_NUM: ${{ steps.meta.outputs.pr_number }}
         run: |
-          obsutil rm -r -f "obs://${OBS_BUCKET}/pr-preview/pr-${PR_NUM}/" || true
-          obsutil cp -r -f -u "artifact/_site/" "obs://${OBS_BUCKET}/pr-preview/pr-${PR_NUM}/"
+          obsutil rm -r -f "obs://${OBS_BUCKET}/${OBS_PREVIEW_PREFIX}/pr-${PR_NUM}/" || true
+          obsutil cp -r -f -u "artifact/_site/" "obs://${OBS_BUCKET}/${OBS_PREVIEW_PREFIX}/pr-${PR_NUM}/"
 
       - name: Cleanup PR preview from OBS
         if: steps.obs-check.outputs.has_obs == 'true' && steps.meta.outputs.event == 'pull_request' && steps.meta.outputs.pr_action == 'closed'
         env:
           PR_NUM: ${{ steps.meta.outputs.pr_number }}
         run: |
-          obsutil rm -r -f "obs://${OBS_BUCKET}/pr-preview/pr-${PR_NUM}/" || true
+          obsutil rm -r -f "obs://${OBS_BUCKET}/${OBS_PREVIEW_PREFIX}/pr-${PR_NUM}/" || true
 
       - name: Comment preview URL on PR
         if: steps.meta.outputs.event == 'pull_request' && steps.meta.outputs.pr_action != 'closed'
@@ -181,11 +154,12 @@ jobs:
           PR_NUM: ${{ steps.meta.outputs.pr_number }}
           SHA: ${{ steps.meta.outputs.sha }}
           OBS_PREVIEW_BASE: ${{ env.OBS_WEBSITE_BASE }}
+          OBS_PREVIEW_PREFIX: ${{ env.OBS_PREVIEW_PREFIX }}
         with:
           script: |
             const prNum = parseInt(process.env.PR_NUM);
             const sha = (process.env.SHA || '').slice(0, 7);
-            const url = `${process.env.OBS_PREVIEW_BASE}/pr-preview/pr-${prNum}/index.html`;
+            const url = `${process.env.OBS_PREVIEW_BASE}/${process.env.OBS_PREVIEW_PREFIX}/pr-${prNum}/index.html`;
             const marker = '<!-- obs-docs-preview -->';
             const body = [
               marker,
