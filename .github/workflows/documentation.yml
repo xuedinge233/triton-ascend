@@ -1,4 +1,16 @@
 name: Documentation
+
+# Workflow 1 of the docs pipeline.
+#
+# Responsibility: build the sphinx site for both languages and stash the result
+# (HTML + a small metadata folder) as a GitHub Actions artifact. That artifact
+# is consumed by the companion "Documentation" workflow, which runs in the
+# upstream context and has the OBS credentials needed to publish.
+#
+# Why split: secrets like OBS_AK/OBS_SK are not available to fork PRs. Keeping
+# this workflow strictly read-only means fork PRs can build and validate docs
+# without touching any credentials or external storage.
+
 on:
   workflow_dispatch:
   schedule:
@@ -6,41 +18,30 @@ on:
   push:
     branches: [release/3.2.1, main]
     paths:
-      - '.github/workflows/documentation.yml'
       - 'docs/**'
+      - '.github/workflows/docs-build.yml'
+      - '.github/workflows/documentation.yml'
   pull_request:
     types: [opened, reopened, synchronize, closed]
     paths:
-      - '.github/workflows/documentation.yml'
       - 'docs/**'
-
-concurrency: preview-${{ github.ref }}
+      - '.github/workflows/docs-build.yml'
+      - '.github/workflows/documentation.yml'
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  Build-Documentation:
+  build:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    env:
-      PYTHON: "python3"
 
     steps:
-      - name: Checkout branch
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Clear docs
-        run: rm -rf /tmp/triton-docs
-        continue-on-error: true
 
       - name: Compute version slug
         id: ver
@@ -60,63 +61,32 @@ jobs:
 
       - name: Build zh docs
         if: github.event.action != 'closed'
-        run: python3 -m sphinx docs/zh "docs/_build/html/${{ steps.ver.outputs.slug }}/zh"
+        run: python3 -m sphinx docs/zh "_site/${{ steps.ver.outputs.slug }}/zh"
 
       - name: Build en docs
         if: github.event.action != 'closed'
-        run: python3 -m sphinx docs/en "docs/_build/html/${{ steps.ver.outputs.slug }}/en"
+        run: python3 -m sphinx docs/en "_site/${{ steps.ver.outputs.slug }}/en"
 
       - name: Add landing page
         if: github.event.action != 'closed'
-        run: cp docs/landing.html docs/_build/html/index.html
+        run: cp docs/landing.html _site/index.html
 
-      - name: Update docs
-        if: github.event_name != 'pull_request'
-        env:
-          SLUG: ${{ steps.ver.outputs.slug }}
+      - name: Stash deploy metadata
         run: |
-          mkdir /tmp/triton-docs/
-          cp -r docs/_build/html/. /tmp/triton-docs/
-          git checkout gh-pages
-          # Wipe only this version's directory; preserve other versions.
-          rm -rf -- "${SLUG}"
-          mkdir -p "${SLUG}"
-          cp -r "/tmp/triton-docs/${SLUG}/." "${SLUG}/"
-          # Always refresh the root landing + .nojekyll.
-          cp /tmp/triton-docs/index.html ./index.html
-          [ -f .nojekyll ] || touch .nojekyll
-          # Maintain versions.json (keep "default" pinned to "main").
-          python3 - <<'PY'
-          import json, os
-          path = "versions.json"
-          slug = os.environ["SLUG"]
-          if os.path.exists(path):
-              with open(path) as f:
-                  data = json.load(f)
-              data.setdefault("versions", [])
-          else:
-              data = {"default": "main", "versions": []}
-          if not any(v.get("slug") == slug for v in data["versions"]):
-              data["versions"].append({"slug": slug})
-          data["default"] = "main"
-          with open(path, "w") as f:
-              json.dump(data, f, indent=2)
-              f.write("\n")
-          PY
-          git add -A
-          git config --global user.email "N/A"
-          git config --global user.name "gh-actions-bot"
-          git commit -m "[GH-PAGES] Updated ${SLUG}" || echo "no changes"
+          mkdir -p _meta
+          echo "${{ github.event_name }}"        > _meta/event
+          echo "${{ steps.ver.outputs.slug }}"   > _meta/slug
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "${{ github.event.pull_request.number }}"   > _meta/pr_number
+            echo "${{ github.event.action }}"                > _meta/pr_action
+            echo "${{ github.event.pull_request.head.sha }}" > _meta/sha
+          fi
 
-      - name: Publish docs
-        if: github.event_name != 'pull_request'
-        run: git push origin gh-pages
-
-      - name: Deploy PR preview to gh-pages
-        if: github.event_name == 'pull_request'
-        uses: rossjrw/pr-preview-action@v1
+      - uses: actions/upload-artifact@v4
         with:
-          source-dir: docs/_build/html
-          preview-branch: gh-pages
-          umbrella-dir: pr-preview
-          action: auto
+          name: docs-artifact
+          path: |
+            _site
+            _meta
+          if-no-files-found: warn
+          retention-days: 7
