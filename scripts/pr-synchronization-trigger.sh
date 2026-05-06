@@ -15,8 +15,9 @@ set -euo pipefail
 
 : "${BASE_URL:?}"; : "${APP_CODE:?}"; : "${APP_KEY:?}"; : "${APP_SECRET:?}"
 : "${YELLOW_PIPELINE_ID:?}"; : "${YELLOW_GROUP_ID:?}"
-: "${PR_ID:?}"; : "${PR_TITLE:?}"; : "${PR_DESC:?}"; : "${STARTER:?}"
+: "${PR_ID:?}"; : "${PR_TITLE:?}"; : "${STARTER:?}"
 : "${URL_B:?}"; : "${BRANCH_B:?}"; : "${URL_Y:?}"; : "${BRANCH_Y:?}"
+PR_DESC="${PR_DESC:-}"
 
 POLL_WAIT="${POLL_WAIT:-15}"
 MAX_POLL="${MAX_POLL:-240}"
