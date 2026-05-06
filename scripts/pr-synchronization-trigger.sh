@@ -5,7 +5,7 @@
 # Required env vars:
 #   BASE_URL, APP_CODE, APP_KEY, APP_SECRET
 #   YELLOW_PIPELINE_ID, YELLOW_GROUP_ID
-#   PR_ID, PR_TITLE, PR_DESC, STARTER
+#   PR_ID, PR_TITLE, PR_DESC
 #   URL_B, BRANCH_B, URL_Y, BRANCH_Y
 # Optional env vars:
 #   POLL_WAIT  (default 15)
@@ -15,8 +15,9 @@ set -euo pipefail
 
 : "${BASE_URL:?}"; : "${APP_CODE:?}"; : "${APP_KEY:?}"; : "${APP_SECRET:?}"
 : "${YELLOW_PIPELINE_ID:?}"; : "${YELLOW_GROUP_ID:?}"
-: "${PR_ID:?}"; : "${PR_TITLE:?}"; : "${PR_DESC:?}"; : "${STARTER:?}"
+: "${PR_ID:?}"; : "${PR_TITLE:?}";
 : "${URL_B:?}"; : "${BRANCH_B:?}"; : "${URL_Y:?}"; : "${BRANCH_Y:?}"
+PR_DESC="${PR_DESC:-}"
 
 POLL_WAIT="${POLL_WAIT:-15}"
 MAX_POLL="${MAX_POLL:-240}"
@@ -35,7 +36,10 @@ log(){ echo "[$(date '+%H:%M:%S')] $*"; }
 
 write_status(){
   [ -n "$STATUS_FILE" ] || return 0
-  printf 'status=%s\nmsg=%s\nblueRecordId=%s\n' "$1" "$2" "$BRI" > "$STATUS_FILE"
+  # $3 (yellowPipelineUrl) is only populated when the backend returns it
+  # (typically on terminal SUCCESS); blank otherwise.
+  printf 'status=%s\nmsg=%s\nblueRecordId=%s\nyellowPipelineUrl=%s\n' \
+    "$1" "$2" "$BRI" "${3:-}" > "$STATUS_FILE"
 }
 
 json_escape(){
@@ -44,6 +48,19 @@ json_escape(){
 
 PR_TITLE_J=$(printf '%s' "$PR_TITLE" | json_escape)
 PR_DESC_J=$(printf '%s'  "$PR_DESC"  | json_escape)
+
+# Resolve the full wheel URL via the manifest written by wheels.yml.
+# pr-sync-collect runs after build-wheels in ci.yml, so the wheel and manifest
+# are already uploaded to OBS by the time this script executes.
+OBS_PREFIX="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend-pr/pr_${PR_ID}"
+WHEEL_NAME=$(curl -fsS "${OBS_PREFIX}/wheel-name.txt" | tr -d '[:space:]' || true)
+if [ -z "${WHEEL_NAME}" ]; then
+  log "wheel manifest missing at ${OBS_PREFIX}/wheel-name.txt"
+  write_status "START_FAILURE" "wheel manifest missing under ${OBS_PREFIX}/ (build may have failed)"
+  exit 1
+fi
+OBS_URL="${OBS_PREFIX}/${WHEEL_NAME}"
+log "Resolved wheel URL: ${OBS_URL}"
 
 log "=== Step 1: POST /start (blueRecordId=${BRI}) ==="
 START_BODY=$(cat <<EOF
@@ -54,16 +71,15 @@ START_BODY=$(cat <<EOF
   "blueRecordTaskName": "PR-${PR_ID}-CI",
   "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
   "yellowGroupId": "${YELLOW_GROUP_ID}",
-  "starter": "zwx920516",
-  "branch": "master",
+  "starter": "z00856207",
+  "branch": "main",
   "parameter": {
     "pr": "${PR_ID}",
     "title": ${PR_TITLE_J},
     "description": ${PR_DESC_J},
     "url_b": "${URL_B}",
     "branch_b": "${BRANCH_B}",
-    "url_y": "${URL_Y}",
-    "branch_y": "${BRANCH_Y}"
+    "obs_url": "${OBS_URL}"
   }
 }
 EOF
@@ -96,10 +112,11 @@ for ((N=1; N<=MAX_POLL; N++)); do
     -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
     -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
   QR=$(cat /tmp/by_query.body 2>/dev/null || true)
-  ST=$(echo "$QR" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
-  MSG=$(echo "$QR" | grep -o '"msg":"[^"]*"'    | head -1 | cut -d'"' -f4)
+  ST=$(echo "$QR"   | grep -o '"status":"[^"]*"'           | head -1 | cut -d'"' -f4)
+  MSG=$(echo "$QR"  | grep -o '"msg":"[^"]*"'              | head -1 | cut -d'"' -f4)
+  YPURL=$(echo "$QR" | grep -o '"yellowPipelineUrl":"[^"]*"' | head -1 | cut -d'"' -f4)
   log "[#${N}] HTTP=${QHTTP} status=${ST:-pending} msg=${MSG}"
-  write_status "${ST:-PENDING}" "${MSG}"
+  write_status "${ST:-PENDING}" "${MSG}" "${YPURL}"
   case "${ST}" in
     SUCCESS|FAILURE|MQS_SEND_FAILURE|UNAUTHORIZED|START_FAILURE|TIMEOUT|ABORT)
       DONE=true; break;;

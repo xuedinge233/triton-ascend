@@ -1,28 +1,42 @@
 name: Wheels
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/wheels.yml
+  workflow_call:
   schedule:
     - cron: "0 8 * * *"
 
-permissions: read-all
+concurrency:
+  group: wheels-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
+  Matrix-Prep:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            cat <<'EOF' >> "$GITHUB_OUTPUT"
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"}],"python":["cp311"]}
+          EOF
+          else
+            cat <<'EOF' >> "$GITHUB_OUTPUT"
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"},{"runs_on":"ubuntu-22.04-arm","arch":"aarch64"}],"python":["cp310","cp311","cp312","cp313"]}
+          EOF
+          fi
+
   Build-Wheels:
+    needs: Matrix-Prep
     timeout-minutes: 360
     runs-on: ${{ matrix.config.runs_on }}
 
     strategy:
       fail-fast: false
-      matrix:
-        config:
-        - {runs_on: 'ubuntu-22.04', arch: 'x86_64'}
-        - {runs_on: 'ubuntu-22.04-arm', arch: 'aarch64'}
-        python: ["cp310", "cp311", "cp312", "cp313"]
-
+      matrix: ${{ fromJSON(needs.Matrix-Prep.outputs.matrix) }}
 
     permissions:
       id-token: write
@@ -84,29 +98,19 @@ jobs:
           name: cibw-wheels-manylinux_2_28_${{ matrix.config.arch }}-wheels-upload
           path: ./wheelhouse/*.whl
 
+      - name: Setup obsutil
+        # PR uploads are handled by wheels-publish.yml via workflow_run, so
+        # forks (which can't read OBS secrets here) still get their wheels
+        # published. The setup + upload below cover schedule / dispatch /
+        # push-to-main only.
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/setup-obsutil
+        with:
+          ak: ${{ secrets.OBS_AK }}
+          sk: ${{ secrets.OBS_SK }}
+          arch: ${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}
+
       - name: Upload wheels to OBS
+        if: github.event_name != 'pull_request'
         shell: bash
-        env:
-          AK: ${{ secrets.OBS_AK }}
-          SK: ${{ secrets.OBS_SK }}
-        run: |
-          if [ -z "${AK}" ] || [ -z "${SK}" ]; then
-            echo "Please set OBS_AK and OBS_SK secrets before uploading."
-            exit 1
-          fi
-
-          OBSUTIL_URL="https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}.tar.gz"
-          
-          curl -fL "$OBSUTIL_URL" -o obsutil.tar.gz
-
-          file obsutil.tar.gz | grep -q gzip || {
-            echo "obsutil.tar.gz is not a gzip file"
-            exit 1
-          }
-
-          tar xzf obsutil.tar.gz
-          rm -f obsutil.tar.gz
-          mv obsutil* obsutil
-
-          obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
-          obsutil/obsutil cp -u wheelhouse/*.whl obs://triton-ascend-artifacts/triton-ascend/
+        run: obsutil/obsutil cp -u wheelhouse/*.whl "obs://triton-ascend-artifacts/triton-ascend/"
