@@ -186,3 +186,4 @@ jobs:
             - msg: `${{ steps.final.outputs.msg }}`
             - blueRecordId: `${{ steps.final.outputs.blueRecordId }}`
             - [run logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+#test1
