@@ -19,13 +19,13 @@ on:
     branches: [release/3.2.1, main]
     paths:
       - 'docs/**'
-      - '.github/workflows/docs-build.yml'
+      - '.github/workflows/docs-preview.yml'
       - '.github/workflows/documentation.yml'
   pull_request:
     types: [opened, reopened, synchronize, closed]
     paths:
       - 'docs/**'
-      - '.github/workflows/docs-build.yml'
+      - '.github/workflows/docs-preview.yml'
       - '.github/workflows/documentation.yml'
 
 permissions:
