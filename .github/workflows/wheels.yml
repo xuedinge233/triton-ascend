@@ -12,6 +12,8 @@ on:
         default: false
   schedule:
     - cron: "0 8 * * *"
+  pull_request:
+    types: [closed]
 
 jobs:
 
@@ -19,6 +21,7 @@ jobs:
     # Emit the build matrix; in ci_only mode it shrinks to the only combos the
     # NPU integration tests consume (aarch64 × cp310/cp311) so PRs don't burn
     # all 8 build slots.
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
@@ -40,6 +43,7 @@ jobs:
 
   Build-Wheels:
     needs: Matrix-Prep
+    if: github.event.action != 'closed'
     timeout-minutes: 360
     runs-on: ${{ matrix.config.runs_on }}
 
@@ -134,9 +138,16 @@ jobs:
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
 
           if [ "$CI_ONLY" = "true" ]; then
-            # Per-run path; integration-tests-ascend reads from the same prefix.
-            # Add an OBS lifecycle policy on `triton-ascend-ci/` to auto-expire.
-            DEST="obs://triton-ascend-artifacts/triton-ascend-pr/${{ github.sha }}/${{ matrix.python }}-${{ matrix.config.arch }}/"
+            # Per-PR path; integration-tests-ascend reads from the same prefix.
+            # Cleaned up by Clean-Wheels job on PR close. Non-PR triggers
+            # (push/merge_group/dispatch) fall back to SHA — kept by lifecycle.
+            PR_NUM="${{ github.event.pull_request.number }}"
+            if [ -n "$PR_NUM" ]; then
+              PR_KEY="pr_${PR_NUM}"
+            else
+              PR_KEY="${{ github.sha }}"
+            fi
+            DEST="obs://triton-ascend-artifacts/triton-ascend-pr/${PR_KEY}/${{ matrix.python }}-${{ matrix.config.arch }}/"
             # Drop a manifest so consumers can fetch the wheel anonymously
             # without needing OBS list/credentials.
             basename wheelhouse/*.whl > wheelhouse/wheel-name.txt
@@ -145,3 +156,26 @@ jobs:
             DEST="obs://triton-ascend-artifacts/triton-ascend/"
           fi
           obsutil/obsutil cp -u wheelhouse/*.whl "$DEST"
+
+  Clean-Wheels:
+    # Remove the PR's wheel directory from OBS when the PR closes (merged or
+    # not). Triggered by `pull_request: closed` on this workflow itself.
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove PR wheels from OBS
+        shell: bash
+        env:
+          AK: ${{ secrets.OBS_AK }}
+          SK: ${{ secrets.OBS_SK }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "${AK}" ] || [ -z "${SK}" ]; then
+            echo "OBS_AK / OBS_SK secrets not configured; skipping cleanup."
+            exit 0
+          fi
+          curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_amd64.tar.gz" -o obsutil.tar.gz
+          tar xzf obsutil.tar.gz
+          sudo mv obsutil_linux_*/obsutil /usr/local/bin/obsutil
+          obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
+          obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend-pr/pr_${PR_NUM}/" || true
