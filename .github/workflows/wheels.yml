@@ -1,6 +1,15 @@
 name: Wheels
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ci_only:
+        description: |
+          When true, only build wheels needed by integration tests (aarch64,
+          cp310/cp311), skip OBS upload, and emit a separately-named artifact
+          for the test job to consume.
+        type: boolean
+        default: false
   pull_request:
     paths:
       - .github/workflows/wheels.yml
@@ -11,18 +20,37 @@ permissions: read-all
 
 jobs:
 
+  Matrix-Prep:
+    # Emit the build matrix; in ci_only mode it shrinks to the only combos the
+    # NPU integration tests consume (aarch64 × cp310/cp311) so PRs don't burn
+    # all 8 build slots.
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        shell: bash
+        env:
+          CI_ONLY: ${{ inputs.ci_only }}
+        run: |
+          if [ "$CI_ONLY" = "true" ]; then
+            cat <<'EOF' >> "$GITHUB_OUTPUT"
+          matrix={"config":[{"runs_on":"ubuntu-22.04-arm","arch":"aarch64"}],"python":["cp310","cp311"]}
+          EOF
+          else
+            cat <<'EOF' >> "$GITHUB_OUTPUT"
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"},{"runs_on":"ubuntu-22.04-arm","arch":"aarch64"}],"python":["cp310","cp311","cp312","cp313"]}
+          EOF
+          fi
+
   Build-Wheels:
+    needs: Matrix-Prep
     timeout-minutes: 360
     runs-on: ${{ matrix.config.runs_on }}
 
     strategy:
       fail-fast: false
-      matrix:
-        config:
-        - {runs_on: 'ubuntu-22.04', arch: 'x86_64'}
-        - {runs_on: 'ubuntu-22.04-arm', arch: 'aarch64'}
-        python: ["cp310", "cp311", "cp312", "cp313"]
-
+      matrix: ${{ fromJSON(needs.Matrix-Prep.outputs.matrix) }}
 
     permissions:
       id-token: write
@@ -89,6 +117,7 @@ jobs:
         env:
           AK: ${{ secrets.OBS_AK }}
           SK: ${{ secrets.OBS_SK }}
+          CI_ONLY: ${{ inputs.ci_only }}
         run: |
           if [ -z "${AK}" ] || [ -z "${SK}" ]; then
             echo "Please set OBS_AK and OBS_SK secrets before uploading."
@@ -96,7 +125,6 @@ jobs:
           fi
 
           OBSUTIL_URL="https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}.tar.gz"
-          
           curl -fL "$OBSUTIL_URL" -o obsutil.tar.gz
 
           file obsutil.tar.gz | grep -q gzip || {
@@ -109,4 +137,16 @@ jobs:
           mv obsutil* obsutil
 
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
-          obsutil/obsutil cp -u wheelhouse/*.whl obs://triton-ascend-artifacts/triton-ascend/
+
+          if [ "$CI_ONLY" = "true" ]; then
+            # Per-run path; integration-tests-ascend reads from the same prefix.
+            # Add an OBS lifecycle policy on `triton-ascend-ci/` to auto-expire.
+            DEST="obs://triton-ascend-artifacts/triton-ascend-ci/${{ github.run_id }}/${{ matrix.python }}-${{ matrix.config.arch }}/"
+            # Drop a manifest so consumers can fetch the wheel anonymously
+            # without needing OBS list/credentials.
+            basename wheelhouse/*.whl > wheelhouse/wheel-name.txt
+            obsutil/obsutil cp -u wheelhouse/wheel-name.txt "$DEST"
+          else
+            DEST="obs://triton-ascend-artifacts/triton-ascend/"
+          fi
+          obsutil/obsutil cp -u wheelhouse/*.whl "$DEST"

@@ -22,7 +22,6 @@ on:
       - '.github/workflows/llvm-build/**'
       - '.github/workflows/pre-commit.yml'
       - '.github/workflows/runner-preparation.yml'
-      - '.github/workflows/wheels.yml'
   merge_group:
     branches: [main, 'dev-**']
     types: [checks_requested]
@@ -41,9 +40,18 @@ jobs:
   # pre-commit:
   #   uses: ./.github/workflows/pre-commit.yml
 
-  integration-tests-ascend:
+  build-wheels:
     needs: runner-preparation
+    if: needs.runner-preparation.outputs.matrix-ASCEND != ''
+    uses: ./.github/workflows/wheels.yml
+    with:
+      ci_only: true
+    secrets: inherit
+
+  integration-tests-ascend:
+    needs: [runner-preparation, build-wheels]
     if: needs.runner-preparation.outputs.matrix-ASCEND != ''
     uses: ./.github/workflows/integration-tests-ascend.yml
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-ASCEND }}
+      use_prebuilt_wheel: true
