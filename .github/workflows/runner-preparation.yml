@@ -94,6 +94,8 @@ jobs:
         run: |
           if [ x"${{ github.repository }}" == x"triton-lang/triton-ascend" ]; then
             echo 'matrix-ASCEND=[{"name":"linux-aarch64-a3-4","runner_type":"linux-aarch64-a3-4","runs_on":["linux-aarch64-a3-4"],"chip_type":"a3"}]' >> $GITHUB_OUTPUT
-          else
+          else if [ x"${{ github.repository }}" == x"cosdt/triton-ascend" ]; then
             echo 'matrix-ASCEND=[{"name":"linux-arm64-npu-2","runner_type":"linux-arm64-npu-2","runs_on":["linux-arm64-npu-2"],"chip_type":"910b"}]' >> $GITHUB_OUTPUT
+          else
+            echo "matrix-ASCEND=[{"name":"ubuntu-22.04","runner_type":"ubuntu-22.04","runs_on":["ubuntu-22.04"],"chip_type":""}]" >> $GITHUB_OUTPUT
           fi
