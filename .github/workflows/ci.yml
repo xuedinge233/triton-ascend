@@ -47,6 +47,9 @@ jobs:
     with:
       ci_only: true
     secrets: inherit
+    permissions:
+      id-token: write
+      contents: read
 
   integration-tests-ascend:
     needs: [runner-preparation, build-wheels]
