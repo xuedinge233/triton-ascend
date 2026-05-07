@@ -10,13 +10,8 @@ on:
           for the test job to consume.
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - .github/workflows/wheels.yml
   schedule:
     - cron: "0 8 * * *"
-
-permissions: read-all
 
 jobs:
 
