@@ -30,7 +30,7 @@ jobs:
         run: |
           if [ "$CI_ONLY" = "true" ]; then
             cat <<'EOF' >> "$GITHUB_OUTPUT"
-          matrix={"config":[{"runs_on":"linux-arm64-npu-2","arch":"aarch64"}],"python":["cp310","cp311"]}
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"}],"python":["cp310","cp311"]}
           EOF
           else
             cat <<'EOF' >> "$GITHUB_OUTPUT"
