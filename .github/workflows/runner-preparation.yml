@@ -97,5 +97,5 @@ jobs:
           else if [ x"${{ github.repository }}" == x"cosdt/triton-ascend" ]; then
             echo 'matrix-ASCEND=[{"name":"linux-arm64-npu-2","runner_type":"linux-arm64-npu-2","runs_on":["linux-arm64-npu-2"],"chip_type":"910b"}]' >> $GITHUB_OUTPUT
           else
-            echo "matrix-ASCEND=[{"name":"ubuntu-22.04","runner_type":"ubuntu-22.04","runs_on":["ubuntu-22.04"],"chip_type":""}]" >> $GITHUB_OUTPUT
+            echo 'matrix-ASCEND=[{"name":"ubuntu-22.04","runner_type":"ubuntu-22.04","runs_on":["ubuntu-22.04"],"chip_type":""}]' >> $GITHUB_OUTPUT
           fi
