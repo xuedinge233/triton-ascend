@@ -78,7 +78,7 @@ START_BODY=$(cat <<EOF
     "title": ${PR_TITLE_J},
     "description": ${PR_DESC_J},
     "url_b": "${URL_B}",
-    "branch_b": "${BRANCH_Y}",
+    "branch_b": "${BRANCH_B}",
     "url_y": "${URL_Y}",
     "branch_y": "${BRANCH_Y}",
     "obs_url": "${OBS_URL}"
