@@ -6,14 +6,6 @@ on:
       matrix:
         required: true
         type: string
-      use_prebuilt_wheel:
-        description: |
-          Skip the in-tree build and install the wheel produced by the
-          `Build Wheel for CI` artifact (uploaded by wheels.yml in ci_only mode).
-          MLIR FileCheck tests are skipped when this is set, since the source
-          build tree is not present.
-        type: boolean
-        default: false
 
 jobs:
   integration-tests-ascend:
@@ -43,7 +35,6 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Cache build dependencies
-        if: ${{ !inputs.use_prebuilt_wheel }}
         uses: actions/cache@v4
         with:
           path: |
@@ -85,7 +76,6 @@ jobs:
           echo "/usr/local/bisheng/tools/bishengir/bin" >> $GITHUB_PATH
 
       - name: Build and install triton-ascend
-        if: ${{ !inputs.use_prebuilt_wheel }}
         shell: bash
         env:
           TRITON_BUILD_WITH_CCACHE: "true"
@@ -114,33 +104,7 @@ jobs:
             -i https://repo.huaweicloud.com/repository/pypi/simple/
 
       - name: CCache stats
-        if: ${{ !inputs.use_prebuilt_wheel }}
         run: ccache --print-stats
-
-      - name: Download prebuilt wheel from OBS
-        if: ${{ inputs.use_prebuilt_wheel }}
-        shell: bash
-        run: |
-          OBS_BASE="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com"
-          PY_TAG="cp${{ matrix.python_version == '3.10' && '310' || '311' }}"
-          PREFIX="triton-ascend-pr/${{ github.sha }}/${PY_TAG}-aarch64"
-
-          mkdir -p /tmp/wheels
-          # Manifest written by the build job; tells us the exact wheel filename.
-          WHEEL_NAME=$(curl -fsS "${OBS_BASE}/${PREFIX}/wheel-name.txt" | tr -d '[:space:]')
-          if [ -z "$WHEEL_NAME" ]; then
-            echo "wheel-name.txt missing or empty under ${PREFIX}/"
-            exit 1
-          fi
-          echo "Wheel: ${WHEEL_NAME}"
-          curl -fL "${OBS_BASE}/${PREFIX}/${WHEEL_NAME}" -o "/tmp/wheels/${WHEEL_NAME}"
-
-      - name: Install prebuilt wheel
-        if: ${{ inputs.use_prebuilt_wheel }}
-        shell: bash
-        run: |
-          ${PYTHON} -m pip install /tmp/wheels/*.whl \
-            -i https://repo.huaweicloud.com/repository/pypi/simple/
 
       - name: Run unit tests on NPU
         shell: bash
@@ -156,7 +120,6 @@ jobs:
           # ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/kernels/test_triton_kernel.py
 
       - name: Run MLIR FileCheck tests
-        if: ${{ !inputs.use_prebuilt_wheel }}
         shell: bash
         run: |
           source /usr/local/Ascend/cann/set_env.sh

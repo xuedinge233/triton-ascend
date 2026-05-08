@@ -58,33 +58,29 @@ jobs:
             PR_ID=$(jq -r '.pr_id // empty'    "$f")
             PR_TITLE=$(jq -r '.pr_title // empty' "$f")
             PR_DESC=$(jq -r '.pr_desc // empty'   "$f")
-            STARTER=$(jq -r '.starter // empty'   "$f")
             URL_B=$(jq -r '.url_b // empty'       "$f")
             BRANCH_B=$(jq -r '.branch_b // empty' "$f")
             HEAD_SHA=$(jq -r '.head_sha // empty' "$f")
           else
             PR_ID="${{ inputs.pr_id }}"
-            P=$(gh pr view "$PR_ID" --json title,body,author,headRefName,headRefOid,headRepository,headRepositoryOwner)
+            P=$(gh pr view "$PR_ID" --json title,body,baseRefName,headRefOid)
             PR_TITLE=$(echo "$P" | jq -r .title)
             PR_DESC=$(echo  "$P" | jq -r '.body // ""')
-            STARTER=$(echo  "$P" | jq -r .author.login)
-            BRANCH_B=$(echo "$P" | jq -r .headRefName)
+            BRANCH_B=$(echo "$P" | jq -r .baseRefName)
             HEAD_SHA=$(echo "$P" | jq -r .headRefOid)
-            OWNER=$(echo "$P"   | jq -r .headRepositoryOwner.login)
-            REPO=$(echo "$P"    | jq -r .headRepository.name)
-            URL_B="https://github.com/${OWNER}/${REPO}"
+            # workflow_dispatch runs in the upstream repo context — use it as URL_B.
+            # The backend resolves the PR head via pr_id (e.g. refs/pull/N/head).
+            URL_B="${{ github.server_url }}/${{ github.repository }}"
           fi
 
           # Fork-controlled values: validate before use.
           [[ "$PR_ID"    =~ ^[0-9]+$ ]]                                            || { echo "invalid PR_ID";   exit 1; }
           [[ "$URL_B"    =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/?$ ]] || { echo "invalid URL_B";   exit 1; }
           [[ "$BRANCH_B" =~ ^[A-Za-z0-9._/-]+$ ]]                                  || { echo "invalid BRANCH_B"; exit 1; }
-          [[ "$STARTER"  =~ ^[A-Za-z0-9._-]+$ ]]                                   || { echo "invalid STARTER";  exit 1; }
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]                                      || { echo "invalid HEAD_SHA"; exit 1; }
 
           {
             echo "pr_id=$PR_ID"
-            echo "starter=$STARTER"
             echo "url_b=$URL_B"
             echo "branch_b=$BRANCH_B"
             echo "head_sha=$HEAD_SHA"
@@ -135,7 +131,6 @@ jobs:
           URL_Y:              ${{ vars.YELLOW_REPO_URL }}
           BRANCH_Y:           ${{ vars.YELLOW_BRANCH }}
           PR_ID:              ${{ steps.ctx.outputs.pr_id }}
-          STARTER:            ${{ steps.ctx.outputs.starter }}
           URL_B:              ${{ steps.ctx.outputs.url_b }}
           BRANCH_B:           ${{ steps.ctx.outputs.branch_b }}
           # PR_TITLE / PR_DESC inherited from $GITHUB_ENV (set in Resolve PR context).

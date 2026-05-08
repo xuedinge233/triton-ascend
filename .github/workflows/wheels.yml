@@ -2,25 +2,20 @@ name: Wheels
 on:
   workflow_dispatch:
   workflow_call:
-    inputs:
-      ci_only:
-        description: |
-          When true, only build wheels needed by integration tests (aarch64,
-          cp310/cp311), skip OBS upload, and emit a separately-named artifact
-          for the test job to consume.
-        type: boolean
-        default: false
   schedule:
     - cron: "0 8 * * *"
   pull_request:
     types: [closed]
 
+concurrency:
+  group: wheels-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
 
   Matrix-Prep:
-    # Emit the build matrix; in ci_only mode it shrinks to the only combos the
-    # NPU integration tests consume (aarch64 × cp310/cp311) so PRs don't burn
-    # all 8 build slots.
+    # PR 路径下只产 cp311 × x86_64 一格；其他触发（schedule / dispatch）继续
+    # 跑完整 8 格用于发布到 OBS nightly 路径。
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
@@ -28,12 +23,10 @@ jobs:
     steps:
       - id: set
         shell: bash
-        env:
-          CI_ONLY: ${{ inputs.ci_only }}
         run: |
-          if [ "$CI_ONLY" = "true" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             cat <<'EOF' >> "$GITHUB_OUTPUT"
-          matrix={"config":[{"runs_on":"linux-aarch64-cpu-8","arch":"aarch64"}],"python":["cp310","cp311"]}
+          matrix={"config":[{"runs_on":"ubuntu-22.04","arch":"x86_64"}],"python":["cp311"]}
           EOF
           else
             cat <<'EOF' >> "$GITHUB_OUTPUT"
@@ -116,7 +109,6 @@ jobs:
         env:
           AK: ${{ secrets.OBS_AK }}
           SK: ${{ secrets.OBS_SK }}
-          CI_ONLY: ${{ inputs.ci_only }}
         run: |
           if [ -z "${AK}" ] || [ -z "${SK}" ]; then
             echo "Please set OBS_AK and OBS_SK secrets before uploading."
@@ -137,18 +129,10 @@ jobs:
 
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
 
-          if [ "$CI_ONLY" = "true" ]; then
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              # Per-PR path; integration-tests-ascend reads from the same prefix.
-              # Cleaned up by Clean-Wheels job on PR close.
-              DEST="obs://triton-ascend-artifacts/triton-ascend-pr/pr_${{ github.event.pull_request.number }}/${{ matrix.python }}-${{ matrix.config.arch }}/"
-            else
-              # Per-run path; integration-tests-ascend reads from the same prefix.
-              # Add an OBS lifecycle policy on `triton-ascend-ci/` to auto-expire.
-              DEST="obs://triton-ascend-artifacts/triton-ascend-pr/${{ github.run_id }}/${{ matrix.python }}-${{ matrix.config.arch }}/"
-            fi
-            # Drop a manifest so consumers can fetch the wheel anonymously
-            # without needing OBS list/credentials.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            DEST="obs://triton-ascend-artifacts/triton-ascend-pr/pr_${{ github.event.pull_request.number }}/"
+            # Manifest so consumers (e.g. the yellow pipeline) can resolve the
+            # wheel filename without listing the bucket.
             basename wheelhouse/*.whl > wheelhouse/wheel-name.txt
             obsutil/obsutil cp -u wheelhouse/wheel-name.txt "$DEST"
           else

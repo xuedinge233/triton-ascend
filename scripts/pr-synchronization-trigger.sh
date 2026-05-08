@@ -5,7 +5,7 @@
 # Required env vars:
 #   BASE_URL, APP_CODE, APP_KEY, APP_SECRET
 #   YELLOW_PIPELINE_ID, YELLOW_GROUP_ID
-#   PR_ID, PR_TITLE, PR_DESC, STARTER
+#   PR_ID, PR_TITLE, PR_DESC
 #   URL_B, BRANCH_B, URL_Y, BRANCH_Y
 # Optional env vars:
 #   POLL_WAIT  (default 15)
@@ -15,7 +15,7 @@ set -euo pipefail
 
 : "${BASE_URL:?}"; : "${APP_CODE:?}"; : "${APP_KEY:?}"; : "${APP_SECRET:?}"
 : "${YELLOW_PIPELINE_ID:?}"; : "${YELLOW_GROUP_ID:?}"
-: "${PR_ID:?}"; : "${PR_TITLE:?}"; : "${STARTER:?}"
+: "${PR_ID:?}"; : "${PR_TITLE:?}";
 : "${URL_B:?}"; : "${BRANCH_B:?}"; : "${URL_Y:?}"; : "${BRANCH_Y:?}"
 PR_DESC="${PR_DESC:-}"
 
@@ -49,6 +49,19 @@ json_escape(){
 PR_TITLE_J=$(printf '%s' "$PR_TITLE" | json_escape)
 PR_DESC_J=$(printf '%s'  "$PR_DESC"  | json_escape)
 
+# Resolve the full wheel URL via the manifest written by wheels.yml.
+# pr-sync-collect runs after build-wheels in ci.yml, so the wheel and manifest
+# are already uploaded to OBS by the time this script executes.
+OBS_PREFIX="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend-pr/pr_${PR_ID}"
+WHEEL_NAME=$(curl -fsS "${OBS_PREFIX}/wheel-name.txt" | tr -d '[:space:]' || true)
+if [ -z "${WHEEL_NAME}" ]; then
+  log "wheel manifest missing at ${OBS_PREFIX}/wheel-name.txt"
+  write_status "START_FAILURE" "wheel manifest missing under ${OBS_PREFIX}/ (build may have failed)"
+  exit 1
+fi
+OBS_URL="${OBS_PREFIX}/${WHEEL_NAME}"
+log "Resolved wheel URL: ${OBS_URL}"
+
 log "=== Step 1: POST /start (blueRecordId=${BRI}) ==="
 START_BODY=$(cat <<EOF
 {
@@ -58,8 +71,8 @@ START_BODY=$(cat <<EOF
   "blueRecordTaskName": "PR-${PR_ID}-CI",
   "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
   "yellowGroupId": "${YELLOW_GROUP_ID}",
-  "starter": "zwx920516",
-  "branch": "master",
+  "starter": "z00856207",
+  "branch": "main",
   "parameter": {
     "pr": "${PR_ID}",
     "title": ${PR_TITLE_J},
@@ -67,7 +80,8 @@ START_BODY=$(cat <<EOF
     "url_b": "${URL_B}",
     "branch_b": "${BRANCH_B}",
     "url_y": "${URL_Y}",
-    "branch_y": "${BRANCH_Y}"
+    "branch_y": "${BRANCH_Y}",
+    "obs_url": "${OBS_URL}"
   }
 }
 EOF
