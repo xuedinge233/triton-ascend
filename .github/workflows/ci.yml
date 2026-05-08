@@ -48,8 +48,6 @@ jobs:
       matrix: ${{ needs.runner-preparation.outputs.matrix-ASCEND }}
 
   build-wheels:
-    needs: runner-preparation
-    if: needs.runner-preparation.outputs.matrix-ASCEND != ''
     uses: ./.github/workflows/wheels.yml
     secrets: inherit
     permissions:
