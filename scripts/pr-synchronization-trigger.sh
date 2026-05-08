@@ -54,8 +54,8 @@ START_BODY=$(cat <<EOF
   "blueRecordTaskName": "PR-${PR_ID}-CI",
   "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
   "yellowGroupId": "${YELLOW_GROUP_ID}",
-  "starter": "zwx920516",
-  "branch": "master",
+  "starter": "z00856207",
+  "branch": "main",
   "parameter": {
     "pr": "${PR_ID}",
     "title": ${PR_TITLE_J},
@@ -63,7 +63,8 @@ START_BODY=$(cat <<EOF
     "url_b": "${URL_B}",
     "branch_b": "${BRANCH_B}",
     "url_y": "${URL_Y}",
-    "branch_y": "${BRANCH_Y}"
+    "branch_y": "${BRANCH_Y}",
+    "obs_url": "https://triton-ascend-artifacts.obs.myhuaweicloud.com/triton-ascend-ci/25487998138/cp310-x86_64/triton_ascend-3.5.0rc3%2Bgit358f5957-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
   }
 }
 EOF
