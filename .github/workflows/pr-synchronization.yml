@@ -1,12 +1,16 @@
 name: PR Synchronization
 
-# Privileged side of the blue-yellow integration. Runs via workflow_run so it
-# can access secrets even for fork PRs. NEVER check out the PR head SHA in
-# this workflow — fork code must not execute under the secret-bearing token.
+# Privileged side of the blue-yellow integration. Listens for the OBS upload
+# workflow ("PR Wheels OBS Lifecycle") to finish so /start only fires once
+# the wheel is on OBS for the yellow pipeline to consume. Runs in base-repo
+# context (workflow_run), so secrets are available even for fork PRs.
+#
+# NEVER check out the PR head SHA in this workflow — fork code must not
+# execute under the secret-bearing token.
 
 on:
   workflow_run:
-    workflows: ["PR Sync Collect"]
+    workflows: ["PR Wheels OBS Lifecycle"]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -25,7 +29,7 @@ jobs:
   trigger:
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'pull_request' &&
+      (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -38,40 +42,39 @@ jobs:
       # Do not pass ref: head_sha — that would execute fork code.
       - uses: actions/checkout@v4
 
-      - name: Download PR meta artifact
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          name: pr-meta
-          path: pr-meta
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-
       - name: Resolve PR context
         id: ctx
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          # Resolve PR id:
+          #   workflow_dispatch: trust the input (operator-provided)
+          #   workflow_run:      look up PR by head_sha (works for fork PRs;
+          #                      workflow_run.pull_requests is empty for them)
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            f=pr-meta/meta.json
-            PR_ID=$(jq -r '.pr_id // empty'    "$f")
-            PR_TITLE=$(jq -r '.pr_title // empty' "$f")
-            PR_DESC=$(jq -r '.pr_desc // empty'   "$f")
-            URL_B=$(jq -r '.url_b // empty'       "$f")
-            BRANCH_B=$(jq -r '.branch_b // empty' "$f")
-            HEAD_SHA=$(jq -r '.head_sha // empty' "$f")
+            SHA="${{ github.event.workflow_run.head_sha }}"
+            PR_ID=$(gh api "/repos/${{ github.repository }}/commits/${SHA}/pulls" \
+                      --jq 'if length > 0 then .[0].number else empty end')
+            if [ -z "${PR_ID}" ]; then
+              echo "No PR found for SHA ${SHA}; nothing to trigger."
+              exit 0
+            fi
           else
             PR_ID="${{ inputs.pr_id }}"
-            P=$(gh pr view "$PR_ID" --json title,body,baseRefName,headRefOid)
-            PR_TITLE=$(echo "$P" | jq -r .title)
-            PR_DESC=$(echo  "$P" | jq -r '.body // ""')
-            BRANCH_B=$(echo "$P" | jq -r .baseRefName)
-            HEAD_SHA=$(echo "$P" | jq -r .headRefOid)
-            # workflow_dispatch runs in the upstream repo context — use it as URL_B.
-            # The backend resolves the PR head via pr_id (e.g. refs/pull/N/head).
-            URL_B="${{ github.server_url }}/${{ github.repository }}"
           fi
+
+          # Fetch the rest of the PR fields via API. Title/body are mutable
+          # by the PR author at any time — same race the original artifact
+          # collector had (it captured at ci.yml run time, not PR open time).
+          P=$(gh pr view "$PR_ID" --repo "${{ github.repository }}" \
+                --json title,body,baseRefName,headRefOid)
+          PR_TITLE=$(echo "$P" | jq -r .title)
+          PR_DESC=$(echo  "$P" | jq -r '.body // ""')
+          BRANCH_B=$(echo "$P" | jq -r .baseRefName)
+          HEAD_SHA=$(echo "$P" | jq -r .headRefOid)
+          URL_B="${{ github.server_url }}/${{ github.repository }}"
 
           # Fork-controlled values: validate before use.
           [[ "$PR_ID"    =~ ^[0-9]+$ ]]                                            || { echo "invalid PR_ID";   exit 1; }
@@ -97,6 +100,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Set commit status (pending)
+        if: steps.ctx.outputs.pr_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
           SHA:      ${{ steps.ctx.outputs.head_sha }}
@@ -109,6 +113,7 @@ jobs:
             -f target_url="$TARGET"
 
       - name: Upsert sticky comment (running)
+        if: steps.ctx.outputs.pr_id != ''
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           number: ${{ steps.ctx.outputs.pr_id }}
@@ -118,6 +123,7 @@ jobs:
 
       - name: Trigger pipeline
         id: run
+        if: steps.ctx.outputs.pr_id != ''
         # Advisory: don't fail the workflow on backend errors. Final state is
         # surfaced via the commit status step below.
         continue-on-error: true
@@ -128,19 +134,127 @@ jobs:
           APP_SECRET:         ${{ secrets.BLUE_YELLOW_APP_SECRET }}
           YELLOW_PIPELINE_ID: ${{ vars.YELLOW_PIPELINE_ID }}
           YELLOW_GROUP_ID:    ${{ vars.YELLOW_GROUP_ID }}
-          URL_Y:              ${{ vars.YELLOW_REPO_URL }}
-          BRANCH_Y:           ${{ vars.YELLOW_BRANCH }}
           PR_ID:              ${{ steps.ctx.outputs.pr_id }}
           URL_B:              ${{ steps.ctx.outputs.url_b }}
           BRANCH_B:           ${{ steps.ctx.outputs.branch_b }}
           # PR_TITLE / PR_DESC inherited from $GITHUB_ENV (set in Resolve PR context).
           STATUS_FILE:        ${{ runner.temp }}/by-status
         run: |
-          chmod +x scripts/pr-synchronization-trigger.sh
-          scripts/pr-synchronization-trigger.sh
+          # Blue/Yellow cross-region pipeline trigger.
+          # Flow: POST /start -> poll /query -> exit on terminal status (SUCCESS=0).
+          set -euo pipefail
+
+          : "${BASE_URL:?}"; : "${APP_CODE:?}"; : "${APP_KEY:?}"; : "${APP_SECRET:?}"
+          : "${YELLOW_PIPELINE_ID:?}"; : "${YELLOW_GROUP_ID:?}"
+          : "${PR_ID:?}"; : "${PR_TITLE:?}"
+          : "${URL_B:?}"; : "${BRANCH_B:?}"
+          PR_DESC="${PR_DESC:-}"
+
+          POLL_WAIT="${POLL_WAIT:-15}"
+          MAX_POLL="${MAX_POLL:-240}"
+
+          H_CODE="X-Apig-AppCode: ${APP_CODE}"
+          H_KEY="AppKey: ${APP_KEY}"
+          H_SEC="AppSecret: ${APP_SECRET}"
+          H_JSON="Content-Type: application/json"
+
+          TS=$(date +%Y%m%d%H%M%S)
+          BRI="pr-${PR_ID}-${TS}"
+          BTI="task-${PR_ID}-${TS}"
+
+          write_status(){
+            # $3 (yellowPipelineUrl) is only populated when the backend returns
+            # it (typically on terminal SUCCESS); blank otherwise.
+            printf 'status=%s\nmsg=%s\nblueRecordId=%s\nyellowPipelineUrl=%s\n' \
+              "$1" "$2" "$BRI" "${3:-}" > "$STATUS_FILE"
+          }
+
+          json_escape(){
+            python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()),end="")'
+          }
+
+          PR_TITLE_J=$(printf '%s' "$PR_TITLE" | json_escape)
+          PR_DESC_J=$(printf '%s'  "$PR_DESC"  | json_escape)
+
+          # Resolve the wheel URL via the manifest. wheels-publish-pr.yml uploads
+          # the manifest before this workflow fires (chained workflow_run), so it
+          # should already be present.
+          OBS_PREFIX="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend-pr/pr_${PR_ID}"
+          WHEEL_NAME=$(curl -fsS "${OBS_PREFIX}/wheel-name.txt" | tr -d '[:space:]' || true)
+          if [ -z "${WHEEL_NAME}" ]; then
+            echo "wheel manifest missing at ${OBS_PREFIX}/wheel-name.txt"
+            write_status "START_FAILURE" "wheel manifest missing under ${OBS_PREFIX}/ (build may have failed)"
+            exit 1
+          fi
+          OBS_URL="${OBS_PREFIX}/${WHEEL_NAME}"
+
+          START_BODY=$(cat <<EOF
+          {
+            "bluePipelineId": "null",
+            "blueRecordId": "${BRI}",
+            "blueRecordTaskId": "${BTI}",
+            "blueRecordTaskName": "PR-${PR_ID}-CI",
+            "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
+            "yellowGroupId": "${YELLOW_GROUP_ID}",
+            "starter": "z00856207",
+            "branch": "main",
+            "parameter": {
+              "pr": "${PR_ID}",
+              "title": ${PR_TITLE_J},
+              "description": ${PR_DESC_J},
+              "url_b": "${URL_B}",
+              "branch_b": "${BRANCH_B}",
+              "obs_url": "${OBS_URL}"
+            }
+          }
+          EOF
+          )
+          # /start is non-idempotent: do not auto-retry (a 502 retry can collide
+          # with the already-accepted task and surface as "task already exists").
+          R=$(curl -sS --max-time 30 \
+            -o /tmp/by_start.body -w '%{http_code}' \
+            -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+            -X POST "${BASE_URL}/start" -d "${START_BODY}" || true)
+          BODY=$(cat /tmp/by_start.body 2>/dev/null || true)
+          echo "HTTP=${R} response: ${BODY}"
+          if [ "$R" != "200" ] || ! echo "$BODY" | grep -q '"code":200'; then
+            write_status "START_FAILURE" "HTTP=${R} body=${BODY}"
+            exit 1
+          fi
+
+          QUERY_BODY=$(cat <<EOF
+          {"blueRecordId":"${BRI}","blueRecordTaskId":"${BTI}"}
+          EOF
+          )
+
+          ST=""; MSG=""; DONE=false
+          for ((N=1; N<=MAX_POLL; N++)); do
+            sleep "$POLL_WAIT"
+            QHTTP=$(curl -sS --retry 3 --retry-all-errors --retry-delay 5 \
+              -o /tmp/by_query.body -w '%{http_code}' \
+              -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+              -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
+            QR=$(cat /tmp/by_query.body 2>/dev/null || true)
+            ST=$(echo "$QR"   | grep -o '"status":"[^"]*"'           | head -1 | cut -d'"' -f4)
+            MSG=$(echo "$QR"  | grep -o '"msg":"[^"]*"'              | head -1 | cut -d'"' -f4)
+            YPURL=$(echo "$QR" | grep -o '"yellowPipelineUrl":"[^"]*"' | head -1 | cut -d'"' -f4)
+            echo "[#${N}] HTTP=${QHTTP} status=${ST:-pending} msg=${MSG}"
+            write_status "${ST:-PENDING}" "${MSG}" "${YPURL}"
+            case "${ST}" in
+              SUCCESS|FAILURE|MQS_SEND_FAILURE|UNAUTHORIZED|START_FAILURE|TIMEOUT|ABORT)
+                DONE=true; break;;
+            esac
+          done
+
+          if [ "$DONE" != "true" ]; then
+            write_status "TIMEOUT" "polling exceeded ${MAX_POLL} attempts without a terminal status"
+            exit 1
+          fi
+          echo "terminal status: ${ST} - ${MSG}"
+          [ "$ST" = "SUCCESS" ] || exit 1
 
       - name: Read final status
-        if: always()
+        if: always() && steps.ctx.outputs.pr_id != ''
         id: final
         run: |
           F="${{ runner.temp }}/by-status"
@@ -156,7 +270,7 @@ jobs:
           fi
 
       - name: Set commit status (final)
-        if: always() && steps.ctx.outputs.head_sha != ''
+        if: always() && steps.ctx.outputs.pr_id != '' && steps.ctx.outputs.head_sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
           SHA:      ${{ steps.ctx.outputs.head_sha }}
@@ -171,7 +285,7 @@ jobs:
             -f target_url="$TARGET"
 
       - name: Upsert sticky comment (final)
-        if: always()
+        if: always() && steps.ctx.outputs.pr_id != ''
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           number: ${{ steps.ctx.outputs.pr_id }}
