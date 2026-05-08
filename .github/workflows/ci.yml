@@ -22,6 +22,7 @@ on:
       - '.github/workflows/llvm-build/**'
       - '.github/workflows/pre-commit.yml'
       - '.github/workflows/runner-preparation.yml'
+      - '.github/workflows/wheels.yml'
   merge_group:
     branches: [main, 'dev-**']
     types: [checks_requested]
@@ -46,8 +47,3 @@ jobs:
     uses: ./.github/workflows/integration-tests-ascend.yml
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-ASCEND }}
-
-  # Wheel build runs as its own top-level workflow (.github/workflows/wheels.yml)
-  # so wheels-publish-pr.yml can listen on it via workflow_run. PR OBS upload
-  # and blue-yellow /start happen on that downstream chain, independently of
-  # this workflow's outcome.
