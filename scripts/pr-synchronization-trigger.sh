@@ -71,7 +71,7 @@ START_BODY=$(cat <<EOF
   "blueRecordTaskName": "PR-${PR_ID}-CI",
   "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
   "yellowGroupId": "${YELLOW_GROUP_ID}",
-  "starter": "z00856207",
+  "starter": "h00874875",
   "branch": "main",
   "parameter": {
     "pr": "${PR_ID}",
@@ -79,8 +79,6 @@ START_BODY=$(cat <<EOF
     "description": ${PR_DESC_J},
     "url_b": "${URL_B}",
     "branch_b": "${BRANCH_B}",
-    "url_y": "${URL_Y}",
-    "branch_y": "${BRANCH_Y}",
     "obs_url": "${OBS_URL}"
   }
 }
