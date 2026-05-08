@@ -64,7 +64,7 @@ START_BODY=$(cat <<EOF
     "branch_b": "main",
     "url_y": "${URL_Y}",
     "branch_y": "${BRANCH_Y}",
-    "obs_url": "https://triton-ascend-artifacts.obs.myhuaweicloud.com/triton-ascend-ci/25487998138/cp310-x86_64/triton_ascend-3.5.0rc3%2Bgit358f5957-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    "obs_url": "https://triton-ascend-artifacts.obs.myhuaweicloud.com/triton-ascend/triton_ascend-3.5.0rc3%2Bgit1d20830d-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
   }
 }
 EOF
