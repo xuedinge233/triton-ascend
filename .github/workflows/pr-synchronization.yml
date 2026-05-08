@@ -156,6 +156,7 @@ jobs:
               echo "status=UNKNOWN"
               echo "msg=no status file produced"
               echo "blueRecordId="
+              echo "yellowPipelineUrl="
             } >> "$GITHUB_OUTPUT"
           fi
 
@@ -185,5 +186,6 @@ jobs:
 
             - msg: `${{ steps.final.outputs.msg }}`
             - blueRecordId: `${{ steps.final.outputs.blueRecordId }}`
+            ${{ steps.final.outputs.yellowPipelineUrl != '' && format('- [yellow pipeline]({0})', steps.final.outputs.yellowPipelineUrl) || '' }}
             - [run logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 #test9

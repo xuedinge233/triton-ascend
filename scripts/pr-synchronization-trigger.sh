@@ -36,7 +36,10 @@ log(){ echo "[$(date '+%H:%M:%S')] $*"; }
 
 write_status(){
   [ -n "$STATUS_FILE" ] || return 0
-  printf 'status=%s\nmsg=%s\nblueRecordId=%s\n' "$1" "$2" "$BRI" > "$STATUS_FILE"
+  # $3 (yellowPipelineUrl) is only populated when the backend returns it
+  # (typically on terminal SUCCESS); blank otherwise.
+  printf 'status=%s\nmsg=%s\nblueRecordId=%s\nyellowPipelineUrl=%s\n' \
+    "$1" "$2" "$BRI" "${3:-}" > "$STATUS_FILE"
 }
 
 json_escape(){
@@ -97,10 +100,11 @@ for ((N=1; N<=MAX_POLL; N++)); do
     -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
     -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
   QR=$(cat /tmp/by_query.body 2>/dev/null || true)
-  ST=$(echo "$QR" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
-  MSG=$(echo "$QR" | grep -o '"msg":"[^"]*"'    | head -1 | cut -d'"' -f4)
+  ST=$(echo "$QR"   | grep -o '"status":"[^"]*"'           | head -1 | cut -d'"' -f4)
+  MSG=$(echo "$QR"  | grep -o '"msg":"[^"]*"'              | head -1 | cut -d'"' -f4)
+  YPURL=$(echo "$QR" | grep -o '"yellowPipelineUrl":"[^"]*"' | head -1 | cut -d'"' -f4)
   log "[#${N}] HTTP=${QHTTP} status=${ST:-pending} msg=${MSG}"
-  write_status "${ST:-PENDING}" "${MSG}"
+  write_status "${ST:-PENDING}" "${MSG}" "${YPURL}"
   case "${ST}" in
     SUCCESS|FAILURE|MQS_SEND_FAILURE|UNAUTHORIZED|START_FAILURE|TIMEOUT|ABORT)
       DONE=true; break;;
