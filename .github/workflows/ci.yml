@@ -47,15 +47,3 @@ jobs:
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-ASCEND }}
 
-  build-wheels:
-    uses: ./.github/workflows/wheels.yml
-    secrets: inherit
-    permissions:
-      id-token: write
-      contents: read
-  # Triggered after wheels finish so that, by the time pr-synchronization /start
-  # fires, the wheel and its manifest are already on OBS for the yellow pipeline
-  # to consume.
-  pr-sync-collect:
-    needs: build-wheels
-    uses: ./.github/workflows/pr-sync-collect.yml
