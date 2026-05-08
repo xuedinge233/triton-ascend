@@ -138,16 +138,15 @@ jobs:
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
 
           if [ "$CI_ONLY" = "true" ]; then
-            # Per-PR path; integration-tests-ascend reads from the same prefix.
-            # Cleaned up by Clean-Wheels job on PR close. Non-PR triggers
-            # (push/merge_group/dispatch) fall back to SHA — kept by lifecycle.
-            PR_NUM="${{ github.event.pull_request.number }}"
-            if [ -n "$PR_NUM" ]; then
-              PR_KEY="pr_${PR_NUM}"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              # Per-PR path; integration-tests-ascend reads from the same prefix.
+              # Cleaned up by Clean-Wheels job on PR close.
+              DEST="obs://triton-ascend-artifacts/triton-ascend-pr/pr_${{ github.event.pull_request.number }}/${{ matrix.python }}-${{ matrix.config.arch }}/"
             else
-              PR_KEY="${{ github.sha }}"
+              # Per-run path; integration-tests-ascend reads from the same prefix.
+              # Add an OBS lifecycle policy on `triton-ascend-ci/` to auto-expire.
+              DEST="obs://triton-ascend-artifacts/triton-ascend-pr/${{ github.run_id }}/${{ matrix.python }}-${{ matrix.config.arch }}/"
             fi
-            DEST="obs://triton-ascend-artifacts/triton-ascend-pr/${PR_KEY}/${{ matrix.python }}-${{ matrix.config.arch }}/"
             # Drop a manifest so consumers can fetch the wheel anonymously
             # without needing OBS list/credentials.
             basename wheelhouse/*.whl > wheelhouse/wheel-name.txt
