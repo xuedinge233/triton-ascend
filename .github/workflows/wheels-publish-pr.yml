@@ -3,12 +3,12 @@ name: PR Wheels OBS Lifecycle
 # Manages the OBS pr_<N>/ directory in the base-repo context so it works for
 # fork PRs (which can't read secrets via pull_request triggers).
 #
-#   publish: after Integration Tests finishes, download the wheel artifact
-#            and upload it to obs://.../triton-ascend-pr/pr_<N>/
+#   publish: after Wheels finishes, download the wheel artifact and upload
+#            it to obs://.../triton-ascend-pr/pr_<N>/
 #   cleanup: when the PR closes, remove that same directory
 on:
   workflow_run:
-    workflows: ["Integration Tests"]
+    workflows: ["Wheels"]
     types: [completed]
   pull_request_target:
     types: [closed]
