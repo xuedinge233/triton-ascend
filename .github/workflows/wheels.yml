@@ -14,8 +14,6 @@ concurrency:
 jobs:
 
   Matrix-Prep:
-    # PR 路径下只产 cp311 × x86_64 一格；其他触发（schedule / dispatch）继续
-    # 跑完整 8 格用于发布到 OBS nightly 路径。
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
