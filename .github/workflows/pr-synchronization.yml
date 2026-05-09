@@ -1,17 +1,18 @@
 name: PR Synchronization
 
-# Privileged side of the blue-yellow integration. Listens for the OBS upload
-# workflow ("PR Wheels OBS Lifecycle") to finish so /start only fires once
-# the wheel is on OBS for the yellow pipeline to consume. Runs in base-repo
-# context (workflow_run), so secrets are available even for fork PRs.
+# Privileged side of the blue-yellow integration. Triggered via workflow_dispatch
+# by wheels-publish-pr.yml after the wheel finishes uploading to OBS, so /start
+# only fires once the wheel is available for the yellow pipeline to consume.
+# Forwarding PR number explicitly avoids the chained-workflow_run head_sha
+# propagation issue.
+#
+# Also exposed as a manual workflow_dispatch entry point for operators to
+# re-trigger /start against an arbitrary PR.
 #
 # NEVER check out the PR head SHA in this workflow — fork code must not
 # execute under the secret-bearing token.
 
 on:
-  workflow_run:
-    workflows: ["PR Wheels OBS Lifecycle"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       pr_id:
@@ -20,23 +21,18 @@ on:
 
 concurrency:
   # Serialize per-PR (backend dedupes by pr number; concurrent /start fails).
-  group: pr-sync-${{ github.event.workflow_run.head_branch || inputs.pr_id }}
+  group: pr-sync-${{ inputs.pr_id }}
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
   trigger:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       pull-requests: write
       statuses: write
-      actions: read
     steps:
       # Default checkout pulls the base repo at the workflow's ref (safe).
       # Do not pass ref: head_sha — that would execute fork code.
@@ -49,25 +45,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Resolve PR id:
-          #   workflow_dispatch: trust the input (operator-provided)
-          #   workflow_run:      look up PR by head_sha (works for fork PRs;
-          #                      workflow_run.pull_requests is empty for them)
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            SHA="${{ github.event.workflow_run.head_sha }}"
-            PR_ID=$(gh api "/repos/${{ github.repository }}/commits/${SHA}/pulls" \
-                      --jq 'if length > 0 then .[0].number else empty end')
-            if [ -z "${PR_ID}" ]; then
-              echo "No PR found for SHA ${SHA}; nothing to trigger."
-              exit 0
-            fi
-          else
-            PR_ID="${{ inputs.pr_id }}"
-          fi
+          # PR id always comes from the dispatch input. wheels-publish-pr.yml
+          # passes the number it resolved from the upstream Wheels run; for
+          # manual re-runs the operator types it in.
+          PR_ID="${{ inputs.pr_id }}"
 
-          # Fetch the rest of the PR fields via API. Title/body are mutable
-          # by the PR author at any time — same race the original artifact
-          # collector had (it captured at ci.yml run time, not PR open time).
+          # Fetch the PR fields via API. Title/body are mutable by the PR
+          # author at any time — same race the original artifact collector
+          # had (it captured at ci.yml run time, not PR open time).
           P=$(gh pr view "$PR_ID" --repo "${{ github.repository }}" \
                 --json title,body,baseRefName,headRefOid)
           PR_TITLE=$(echo "$P" | jq -r .title)
@@ -144,15 +129,6 @@ jobs:
           # Flow: POST /start -> poll /query -> exit on terminal status (SUCCESS=0).
           set -euo pipefail
 
-          : "${BASE_URL:?}"; : "${APP_CODE:?}"; : "${APP_KEY:?}"; : "${APP_SECRET:?}"
-          : "${YELLOW_PIPELINE_ID:?}"; : "${YELLOW_GROUP_ID:?}"
-          : "${PR_ID:?}"; : "${PR_TITLE:?}"
-          : "${URL_B:?}"; : "${BRANCH_B:?}"
-          PR_DESC="${PR_DESC:-}"
-
-          POLL_WAIT="${POLL_WAIT:-15}"
-          MAX_POLL="${MAX_POLL:-240}"
-
           H_CODE="X-Apig-AppCode: ${APP_CODE}"
           H_KEY="AppKey: ${APP_KEY}"
           H_SEC="AppSecret: ${APP_SECRET}"
@@ -173,13 +149,13 @@ jobs:
             python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()),end="")'
           }
 
-          PR_TITLE_J=$(printf '%s' "$PR_TITLE" | json_escape)
-          PR_DESC_J=$(printf '%s'  "$PR_DESC"  | json_escape)
+          PR_TITLE_J=$(printf '%s' "${PR_TITLE}"   | json_escape)
+          PR_DESC_J=$(printf  '%s' "${PR_DESC:-}"  | json_escape)
 
-          # Resolve the wheel URL via the manifest. wheels-publish-pr.yml uploads
-          # the manifest before this workflow fires (chained workflow_run), so it
-          # should already be present.
-          OBS_PREFIX="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend-pr/pr_${PR_ID}"
+          # Resolve the wheel URL via the manifest. wheels-publish-pr.yml
+          # finishes the OBS upload before dispatching this workflow, so the
+          # manifest is guaranteed to be present.
+          OBS_PREFIX="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}"
           WHEEL_NAME=$(curl -fsS "${OBS_PREFIX}/wheel-name.txt" | tr -d '[:space:]' || true)
           if [ -z "${WHEEL_NAME}" ]; then
             echo "wheel manifest missing at ${OBS_PREFIX}/wheel-name.txt"
@@ -228,8 +204,8 @@ jobs:
           )
 
           ST=""; MSG=""; DONE=false
-          for ((N=1; N<=MAX_POLL; N++)); do
-            sleep "$POLL_WAIT"
+          for ((N=1; N<=240; N++)); do
+            sleep 15
             QHTTP=$(curl -sS --retry 3 --retry-all-errors --retry-delay 5 \
               -o /tmp/by_query.body -w '%{http_code}' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
@@ -247,7 +223,7 @@ jobs:
           done
 
           if [ "$DONE" != "true" ]; then
-            write_status "TIMEOUT" "polling exceeded ${MAX_POLL} attempts without a terminal status"
+            write_status "TIMEOUT" "polling exceeded 240 attempts without a terminal status"
             exit 1
           fi
           echo "terminal status: ${ST} - ${MSG}"
