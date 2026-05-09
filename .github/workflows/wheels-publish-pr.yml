@@ -236,7 +236,10 @@ jobs:
             write_status "START_FAILURE" "wheel filename not provided (publish skipped or workflow_dispatch input empty)"
             exit 1
           fi
-          OBS_URL="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}/${WHEEL_NAME}"
+          # Wheel filenames carry PEP 440 local version markers like `3.5.0rc3+gita0b65980`.
+          # Percent-encode so consumers don't decode `+` as space.
+          WHEEL_NAME_ENC=$(printf '%s' "$WHEEL_NAME" | jq -sRr @uri)
+          OBS_URL="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}/${WHEEL_NAME_ENC}"
 
           START_BODY=$(cat <<EOF
           {
@@ -253,8 +256,8 @@ jobs:
               "title": ${PR_TITLE_J},
               "description": ${PR_DESC_J},
               "url_b": "${URL_B}",
-              "branch_b": "${BRANCH_B}"B
-              "obs_url": https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/11/triton_ascend-3.5.0rc3%2Bgita0b65980-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+              "branch_b": "${BRANCH_B}",
+              "obs_url": "${OBS_URL}"
             }
           }
           EOF
