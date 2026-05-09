@@ -1,5 +1,4 @@
-name: PR Pipeline
-
+name: A5 Pipeline Tests
 # Combined orchestration after Wheels finishes (or on PR close):
 #   publish: download wheel artifact → upload to obs://.../triton-ascend/<N>/
 #   trigger: needs publish; calls blue-yellow /start and polls /query
@@ -120,7 +119,6 @@ jobs:
     timeout-minutes: 90
     permissions:
       pull-requests: write
-      statuses: write
     steps:
       # Default checkout pulls the base repo at the workflow's ref (safe).
       # Do not pass ref: head_sha — that would execute fork code.
@@ -138,18 +136,14 @@ jobs:
           # Title/body are mutable by the PR author at any time — same race
           # the original artifact collector had.
           P=$(gh pr view "$PR_ID" --repo "${{ github.repository }}" \
-                --json title,body,baseRefName,headRefOid)
+                --json title,body,baseRefName)
           PR_TITLE=$(echo "$P" | jq -r .title)
           PR_DESC=$(echo  "$P" | jq -r '.body // ""')
           BRANCH_B=$(echo "$P" | jq -r .baseRefName)
-          HEAD_SHA=$(echo "$P" | jq -r .headRefOid)
-          URL_B="${{ github.server_url }}/${{ github.repository }}"
 
           {
             echo "pr_id=$PR_ID"
-            echo "url_b=$URL_B"
             echo "branch_b=$BRANCH_B"
-            echo "head_sha=$HEAD_SHA"
           } >> "$GITHUB_OUTPUT"
 
           # PR_TITLE / PR_DESC may contain newlines; pass via env file as multi-line values.
@@ -162,31 +156,8 @@ jobs:
             echo "__EOF__"
           } >> "$GITHUB_ENV"
 
-      - name: Set commit status (pending)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA:      ${{ steps.ctx.outputs.head_sha }}
-          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
-            -f state=pending \
-            -f context='blue-yellow/pipeline' \
-            -f description='Pipeline running' \
-            -f target_url="$TARGET"
-
-      - name: Upsert sticky comment (running)
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          number: ${{ steps.ctx.outputs.pr_id }}
-          header: blue-yellow
-          message: |
-            ⏳ **Blue-Yellow pipeline running** — [view logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-
       - name: Trigger pipeline
         id: run
-        # Advisory: don't fail the workflow on backend errors. Final state is
-        # surfaced via the commit status step below.
-        continue-on-error: true
         env:
           BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
           APP_CODE:           ${{ secrets.BLUE_YELLOW_APP_CODE }}
@@ -195,7 +166,7 @@ jobs:
           YELLOW_PIPELINE_ID: ${{ vars.YELLOW_PIPELINE_ID }}
           YELLOW_GROUP_ID:    ${{ vars.YELLOW_GROUP_ID }}
           PR_ID:              ${{ steps.ctx.outputs.pr_id }}
-          URL_B:              ${{ steps.ctx.outputs.url_b }}
+          URL_B:              ${{ github.server_url }}/${{ github.repository }}
           BRANCH_B:           ${{ steps.ctx.outputs.branch_b }}
           # workflow_run path: from publish job output. workflow_dispatch: from input.
           WHEEL_NAME:         ${{ inputs.wheel_name || needs.publish.outputs.wheel_name }}
@@ -236,8 +207,6 @@ jobs:
             write_status "START_FAILURE" "wheel filename not provided (publish skipped or workflow_dispatch input empty)"
             exit 1
           fi
-          # Wheel filenames carry PEP 440 local version markers like `3.5.0rc3+gita0b65980`.
-          # Percent-encode so consumers don't decode `+` as space.
           WHEEL_NAME_ENC=$(printf '%s' "$WHEEL_NAME" | jq -sRr @uri)
           OBS_URL="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}/${WHEEL_NAME_ENC}"
 
@@ -288,9 +257,6 @@ jobs:
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
             QR=$(cat /tmp/by_query.body 2>/dev/null || true)
-            # `|| true` on each parse: under set -euo pipefail, grep -o returning 1 (no match)
-            # would propagate through the pipe and kill the script silently — yellow's first
-            # few /query responses can omit "status" until it picks up the MQS message.
             ST=$(printf '%s' "$QR"   | grep -o '"status":"[^"]*"'           | head -1 | cut -d'"' -f4 || true)
             MSG=$(printf '%s' "$QR"  | grep -o '"msg":"[^"]*"'              | head -1 | cut -d'"' -f4 || true)
             YPURL=$(printf '%s' "$QR" | grep -o '"yellowPipelineUrl":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
@@ -325,21 +291,6 @@ jobs:
               echo "yellowPipelineUrl="
             } >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Set commit status (final)
-        if: always() && steps.ctx.outputs.head_sha != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA:      ${{ steps.ctx.outputs.head_sha }}
-          STATE:    ${{ steps.run.outcome == 'success' && 'success' || 'failure' }}
-          DESC:     ${{ steps.final.outputs.status }}
-          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
-            -f state="$STATE" \
-            -f context='blue-yellow/pipeline' \
-            -f description="${DESC:-UNKNOWN}" \
-            -f target_url="$TARGET"
 
       - name: Upsert sticky comment (final)
         if: always() && steps.ctx.outputs.pr_id != ''
@@ -377,4 +328,12 @@ jobs:
       - name: Remove PR wheels from OBS
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
-        run: obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
+        run: |
+          # Guard against a missing/malformed PR_NUM: an empty value would
+          # collapse the URL to .../triton-ascend/ and `rm -rf` would wipe
+          # every PR's wheels. Require a positive integer before proceeding.
+          if [[ ! "${PR_NUM:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Refusing to delete: PR_NUM='${PR_NUM:-}' is not a positive integer" >&2
+            exit 1
+          fi
+          obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
