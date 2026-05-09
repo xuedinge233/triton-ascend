@@ -272,4 +272,5 @@ jobs:
             - msg: `${{ steps.final.outputs.msg }}`
             - blueRecordId: `${{ steps.final.outputs.blueRecordId }}`
             ${{ steps.final.outputs.yellowPipelineUrl != '' && format('- [yellow pipeline]({0})', steps.final.outputs.yellowPipelineUrl) || '' }}
+            ${{ steps.final.outputs.yellowPipelineUrl != '' && format('- [yellow pipeline]({0})', steps.final.outputs.yellowPipelineUrl) || '' }}
             - [run logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
