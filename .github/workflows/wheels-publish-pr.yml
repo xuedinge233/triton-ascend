@@ -22,7 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
+      # actions: write covers both reading the upstream Wheels run's artifacts
+      # AND dispatching pr-synchronization at the end of this job.
+      actions: write
       pull-requests: read
     steps:
       # Sparse checkout: we only need .github/actions/setup-obsutil for the
@@ -69,12 +71,26 @@ jobs:
         env:
           PR_NUM: ${{ steps.pr.outputs.num }}
         run: |
-          DEST="obs://triton-ascend-artifacts/triton-ascend-pr/pr_${PR_NUM}/"
+          DEST="obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/"
           # Manifest so consumers (e.g. the yellow pipeline) can resolve the
           # wheel filename without listing the bucket.
           basename wheelhouse/*.whl > wheelhouse/wheel-name.txt
           obsutil/obsutil cp -u wheelhouse/wheel-name.txt "$DEST"
           obsutil/obsutil cp -u wheelhouse/*.whl "$DEST"
+
+      # Dispatch pr-synchronization explicitly. Chained workflow_run does NOT
+      # propagate the PR head_sha (the second-level run gets default-branch SHA
+      # instead), so we forward the PR number directly via workflow_dispatch
+      # input. Fires only after the OBS upload above succeeded.
+      - name: Trigger pr-synchronization
+        if: steps.pr.outputs.num != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ steps.pr.outputs.num }}
+        run: |
+          gh workflow run pr-synchronization.yml \
+            --repo "${{ github.repository }}" \
+            -f pr_id="${PR_NUM}"
 
   cleanup:
     if: github.event_name == 'pull_request_target'
@@ -98,4 +114,4 @@ jobs:
       - name: Remove PR wheels from OBS
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
-        run: obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend-pr/pr_${PR_NUM}/" || true
+        run: obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
