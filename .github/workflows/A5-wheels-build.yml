@@ -97,7 +97,10 @@ jobs:
           # inside the container must instead live on the runner itself.
           # Long-term: bake these into the runner image and drop this step.
           MISSING=()
-          for t in ccache clang lld pybind11; do
+          # 注意:cmake/ninja/pybind11/nanobind 是 pyproject.toml 的
+          # build-system.requires,由下面 `pip wheel` 在隔离 env 里自动装,
+          # 不要往这里加 Python 包。
+          for t in ccache clang lld; do
             command -v "$t" >/dev/null 2>&1 || MISSING+=("$t")
           done
           if [ ${#MISSING[@]} -eq 0 ]; then
@@ -133,15 +136,15 @@ jobs:
           TRITON_WHEEL_NAME: triton-ascend
           TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
         run: |
-          # python-build-standalone 自带 pip + setuptools,但 wheel 包不一定有,
-          # 而 bdist_wheel 命令依赖它,显式装一下避免首次构建报错。
-          "$PYTHON" -m pip install --upgrade pip setuptools wheel
-
+          # PEP 517 构建:`pip wheel` 会读 pyproject.toml 的 build-system.requires,
+          # 在隔离的临时 env 里自动装 setuptools/cmake/ninja/pybind11/nanobind,
+          # 然后调 setuptools.build_meta 完成构建。--no-deps 跳过运行期依赖,
+          # 我们只想要 wheel 本身;--wheel-dir 指定输出目录。
           ccache --zero-stats
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
           MAX_JOBS="$NUM_PROCS" \
-          "$PYTHON" setup.py bdist_wheel --dist-dir wheelhouse/
+          "$PYTHON" -m pip wheel . --no-deps --wheel-dir wheelhouse/
 
       - uses: actions/upload-artifact@v4
         with:
