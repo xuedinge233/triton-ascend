@@ -137,6 +137,12 @@ jobs:
           TRITON_BUILD_PROTON: OFF
           TRITON_WHEEL_NAME: triton-ascend
           TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
+          # Skip the upstream-triton NVIDIA toolchain downloads (ptxas, cuobjdump,
+          # nvdisasm, cudart, cupti). triton-ascend targets the Ascend NPU and
+          # doesn't ship the NVIDIA backend, so these are unnecessary — and
+          # the self-hosted runner has no outbound access to NVIDIA's CDN
+          # (`developer.download.nvidia.com`) anyway.
+          TRITON_OFFLINE_BUILD: "1"
         run: |
           # PEP 517 构建:`pip wheel` 会读 pyproject.toml 的 build-system.requires,
           # 在隔离的临时 env 里自动装 setuptools/cmake/ninja/pybind11/nanobind,
