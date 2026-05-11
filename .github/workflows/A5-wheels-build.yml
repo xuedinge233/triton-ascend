@@ -30,14 +30,9 @@ concurrency:
 jobs:
   Build-Wheels:
     timeout-minutes: 360
-    runs-on: ${{ matrix.config.runs_on }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - {runs_on: linux-amd64-cpu-16, arch: x86_64}
-        python: [cp311]
+    runs-on: linux-amd64-cpu-16
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
 
     permissions:
       id-token: write
@@ -45,19 +40,24 @@ jobs:
 
     steps:
 
-      - name: Prune stale docker containers
-        run: |
-          # If cibuildwheel crashes (or, say, is OOM-killed), it leaves behind a
-          # docker container.  Eventually these consume all the disk space on
-          # this machine.
-          docker container prune -f
-
       - name: Checkout
         uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          fetch-depth: 0
+          submodules: "true"
+
+      - name: Add git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache build dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.triton/llvm
+            ~/.triton/json
+            ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'third_party/ascend/llvm_patch/*.patch') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-
 
       - name: Build and install triton-ascend
         shell: bash
@@ -66,18 +66,20 @@ jobs:
           TRITON_BUILD_WITH_CLANG_LLD: "TRUE"
           TRITON_DISABLE_LINE_INFO: 1
           CCACHE_COMPRESS: "true"
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
           TRITON_BUILD_WITH_O1: true
           TRITON_BUILD_PROTON: OFF
           TRITON_WHEEL_NAME: triton-ascend
           TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
         run: |
+          mkdir -p "$CCACHE_DIR"
           ccache --zero-stats
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
           MAX_JOBS="$NUM_PROCS" \
-          ${PYTHON} setup.py bdist_wheel --dist-dir wheelhouse/
+          python setup.py bdist_wheel --dist-dir=./wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-wheels-manylinux_2_28_${{ matrix.config.arch }}-wheels-upload
+          name: cibw-wheels-manylinux_2_28_x86_64-wheels-upload
           path: ./wheelhouse/*.whl
