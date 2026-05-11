@@ -74,8 +74,16 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
           uv python install 3.11
-          PYBIN=$(uv python find 3.11)
+
+          # uv-managed Python 自带 PEP 668 的 EXTERNALLY-MANAGED 标记,直接
+          # 在全局 pip install 会报 externally-managed-environment。做法是
+          # 用 uv 在 workspace 下建个 venv,所有 pip / setup.py 都跑在 venv 里。
+          rm -rf .venv
+          uv venv --python 3.11 .venv
+
+          PYBIN="$PWD/.venv/bin/python"
           echo "PYTHON=$PYBIN" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           "$PYBIN" --version
 
       - name: Build and install triton-ascend
