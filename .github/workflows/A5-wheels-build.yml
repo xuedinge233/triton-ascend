@@ -48,9 +48,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Check python version
+        run: python --version
+
+      - name: Install Python 3.11 via uv
+        shell: bash
+        run: |
+          set -euo pipefail
+          # uv 自身是单二进制,Python 用预编译版(python-build-standalone)。
+          # self-hosted runner 文件系统跨 job 持久,装一次后后续 job 直接走缓存。
+
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          # uv 官方 installer 默认装到 ~/.local/bin;旧版本可能放 ~/.cargo/bin
+          export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          uv python install 3.11
+          PYBIN=$(uv python find 3.11)
+          echo "PYTHON=$PYBIN" >> "$GITHUB_ENV"
+          "$PYBIN" --version
 
       - name: Build and install triton-ascend
         shell: bash
@@ -64,11 +83,15 @@ jobs:
           TRITON_WHEEL_NAME: triton-ascend
           TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
         run: |
+          # python-build-standalone 自带 pip + setuptools,但 wheel 包不一定有,
+          # 而 bdist_wheel 命令依赖它,显式装一下避免首次构建报错。
+          "$PYTHON" -m pip install --upgrade pip setuptools wheel
+
           ccache --zero-stats
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
           MAX_JOBS="$NUM_PROCS" \
-          ${PYTHON} setup.py bdist_wheel --dist-dir wheelhouse/
+          "$PYTHON" setup.py bdist_wheel --dist-dir wheelhouse/
 
       - uses: actions/upload-artifact@v4
         with:
