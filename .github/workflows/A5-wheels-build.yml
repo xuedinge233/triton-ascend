@@ -97,7 +97,7 @@ jobs:
           # inside the container must instead live on the runner itself.
           # Long-term: bake these into the runner image and drop this step.
           MISSING=()
-          for t in ccache clang lld; do
+          for t in ccache clang lld pybind11; do
             command -v "$t" >/dev/null 2>&1 || MISSING+=("$t")
           done
           if [ ${#MISSING[@]} -eq 0 ]; then
