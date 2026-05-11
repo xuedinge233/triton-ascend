@@ -45,13 +45,6 @@ jobs:
 
     steps:
 
-      - name: Prune stale docker containers
-        run: |
-          # If cibuildwheel crashes (or, say, is OOM-killed), it leaves behind a
-          # docker container.  Eventually these consume all the disk space on
-          # this machine.
-          docker container prune -f
-
       - name: Checkout
         uses: actions/checkout@v4
 
