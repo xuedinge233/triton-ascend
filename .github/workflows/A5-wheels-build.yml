@@ -30,14 +30,9 @@ concurrency:
 jobs:
   Build-Wheels:
     timeout-minutes: 360
-    runs-on: ${{ matrix.config.runs_on }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - {runs_on: linux-amd64-cpu-16, arch: x86_64}
-        python: [cp311]
+    runs-on: linux-amd64-cpu-16
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
 
     permissions:
       id-token: write
@@ -50,82 +45,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Probe pre-existing Python
-        shell: bash
-        run: |
-          # Self-hosted runner state probe — never fail the build on this.
-          set +e
-          echo "python:     $(command -v python || echo MISSING)"
-          echo "python3:    $(command -v python3 || echo MISSING)"
-          echo "python3.11: $(command -v python3.11 || echo MISSING)"
-          (python3 --version 2>&1 || true)
-
-      - name: Install Python 3.11 via uv
-        shell: bash
-        run: |
-          set -euo pipefail
-          # uv 自身是单二进制,Python 用预编译版(python-build-standalone)。
-          # self-hosted runner 文件系统跨 job 持久,装一次后后续 job 直接走缓存。
-
-          if ! command -v uv >/dev/null 2>&1; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-          fi
-          # uv 官方 installer 默认装到 ~/.local/bin;旧版本可能放 ~/.cargo/bin
-          export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-          uv python install 3.11
-
-          # uv-managed Python 自带 PEP 668 的 EXTERNALLY-MANAGED 标记,直接
-          # 在全局 pip install 会报 externally-managed-environment。做法是
-          # 用 uv 在 workspace 下建个 venv,所有 pip / setup.py 都跑在 venv 里。
-          rm -rf .venv
-          # --seed 让 venv 里自带 pip/setuptools/wheel,setup.py 走 setuptools
-          # 内部调 pip 时不会因 "No module named pip" 失败。
-          uv venv --python 3.11 --seed .venv
-
-          PYBIN="$PWD/.venv/bin/python"
-          echo "PYTHON=$PYBIN" >> "$GITHUB_ENV"
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-          "$PYBIN" --version
-
-      - name: Ensure build tools (ccache / clang / lld)
-        shell: bash
-        run: |
-          set -e
-          # A5 path builds on the bare runner (not in a manylinux container
-          # like wheels.yml), so clang+lld+ccache that CIBW_BEFORE_ALL installs
-          # inside the container must instead live on the runner itself.
-          # Long-term: bake these into the runner image and drop this step.
-          MISSING=()
-          # 注意:cmake/ninja/pybind11/nanobind 是 pyproject.toml 的
-          # build-system.requires,由下面 `pip wheel` 在隔离 env 里自动装,
-          # 不要往这里加 Python 包。
-          for t in ccache clang lld; do
-            command -v "$t" >/dev/null 2>&1 || MISSING+=("$t")
-          done
-          if [ ${#MISSING[@]} -eq 0 ]; then
-            echo "All build tools present."
-            exit 0
-          fi
-          echo "Installing: ${MISSING[*]}"
-          if command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y "${MISSING[@]}"
-          elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y "${MISSING[@]}"
-          elif command -v yum >/dev/null 2>&1; then
-            sudo yum install -y "${MISSING[@]}"
-          else
-            echo "No supported package manager on this runner" >&2
-            exit 1
-          fi
-          for t in "${MISSING[@]}"; do
-            command -v "$t" >/dev/null 2>&1 \
-              || { echo "Install of $t failed" >&2; exit 1; }
-          done
-
       - name: Build and install triton-ascend
         shell: bash
         env:
@@ -137,24 +56,14 @@ jobs:
           TRITON_BUILD_PROTON: OFF
           TRITON_WHEEL_NAME: triton-ascend
           TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
-          # Skip the upstream-triton NVIDIA toolchain downloads (ptxas, cuobjdump,
-          # nvdisasm, cudart, cupti). triton-ascend targets the Ascend NPU and
-          # doesn't ship the NVIDIA backend, so these are unnecessary — and
-          # the self-hosted runner has no outbound access to NVIDIA's CDN
-          # (`developer.download.nvidia.com`) anyway.
-          TRITON_OFFLINE_BUILD: "1"
         run: |
-          # PEP 517 构建:`pip wheel` 会读 pyproject.toml 的 build-system.requires,
-          # 在隔离的临时 env 里自动装 setuptools/cmake/ninja/pybind11/nanobind,
-          # 然后调 setuptools.build_meta 完成构建。--no-deps 跳过运行期依赖,
-          # 我们只想要 wheel 本身;--wheel-dir 指定输出目录。
           ccache --zero-stats
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
           MAX_JOBS="$NUM_PROCS" \
-          "$PYTHON" -m pip wheel . --no-deps --wheel-dir wheelhouse/
+          python setup.py bdist_wheel --no-deps --wheel-dir=./wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-wheels-manylinux_2_28_${{ matrix.config.arch }}-wheels-upload
+          name: cibw-wheels-manylinux_2_28_x86_64-wheels-upload
           path: ./wheelhouse/*.whl
