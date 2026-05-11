@@ -79,7 +79,9 @@ jobs:
           # 在全局 pip install 会报 externally-managed-environment。做法是
           # 用 uv 在 workspace 下建个 venv,所有 pip / setup.py 都跑在 venv 里。
           rm -rf .venv
-          uv venv --python 3.11 .venv
+          # --seed 让 venv 里自带 pip/setuptools/wheel,setup.py 走 setuptools
+          # 内部调 pip 时不会因 "No module named pip" 失败。
+          uv venv --python 3.11 --seed .venv
 
           PYBIN="$PWD/.venv/bin/python"
           echo "PYTHON=$PYBIN" >> "$GITHUB_ENV"
