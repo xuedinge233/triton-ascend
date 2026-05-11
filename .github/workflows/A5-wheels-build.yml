@@ -88,6 +88,39 @@ jobs:
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           "$PYBIN" --version
 
+      - name: Ensure build tools (ccache / clang / lld)
+        shell: bash
+        run: |
+          set -e
+          # A5 path builds on the bare runner (not in a manylinux container
+          # like wheels.yml), so clang+lld+ccache that CIBW_BEFORE_ALL installs
+          # inside the container must instead live on the runner itself.
+          # Long-term: bake these into the runner image and drop this step.
+          MISSING=()
+          for t in ccache clang lld; do
+            command -v "$t" >/dev/null 2>&1 || MISSING+=("$t")
+          done
+          if [ ${#MISSING[@]} -eq 0 ]; then
+            echo "All build tools present."
+            exit 0
+          fi
+          echo "Installing: ${MISSING[*]}"
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y "${MISSING[@]}"
+          elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y "${MISSING[@]}"
+          elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y "${MISSING[@]}"
+          else
+            echo "No supported package manager on this runner" >&2
+            exit 1
+          fi
+          for t in "${MISSING[@]}"; do
+            command -v "$t" >/dev/null 2>&1 \
+              || { echo "Install of $t failed" >&2; exit 1; }
+          done
+
       - name: Build and install triton-ascend
         shell: bash
         env:
