@@ -48,8 +48,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check python version
-        run: python --version
+      - name: Probe pre-existing Python
+        shell: bash
+        run: |
+          # Self-hosted runner state probe — never fail the build on this.
+          set +e
+          echo "python:     $(command -v python || echo MISSING)"
+          echo "python3:    $(command -v python3 || echo MISSING)"
+          echo "python3.11: $(command -v python3.11 || echo MISSING)"
+          (python3 --version 2>&1 || true)
 
       - name: Install Python 3.11 via uv
         shell: bash
