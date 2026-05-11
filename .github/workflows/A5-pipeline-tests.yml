@@ -58,14 +58,16 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          # `pull_request` events run on a synthetic merge SHA, not the PR head,
+          # so /commits/<sha>/pulls returns empty. Look up by head branch + owner
+          # (works for fork PRs too, where workflow_run.pull_requests is empty).
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          # workflow_run.pull_requests is empty for fork PRs, so look up by
-          # head SHA via the API instead.
-          NUM=$(gh api "/repos/${{ github.repository }}/commits/${SHA}/pulls" \
+          NUM=$(gh api "/repos/${{ github.repository }}/pulls?state=open&head=${HEAD_OWNER}:${HEAD_BRANCH}" \
                   --jq 'if length > 0 then .[0].number else empty end')
           if [ -z "${NUM}" ]; then
-            echo "No PR found for SHA ${SHA}; nothing to publish."
+            echo "No open PR found for ${HEAD_OWNER}:${HEAD_BRANCH}; nothing to publish."
             exit 0
           fi
           echo "num=${NUM}" >> "$GITHUB_OUTPUT"
@@ -336,4 +338,4 @@ jobs:
             exit 1
           fi
           obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
-#test
+# test1 --- IGNORE ---
