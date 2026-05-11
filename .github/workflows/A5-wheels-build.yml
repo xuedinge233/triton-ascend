@@ -61,7 +61,7 @@ jobs:
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
           MAX_JOBS="$NUM_PROCS" \
-          python setup.py bdist_wheel --no-deps --wheel-dir=./wheelhouse
+          python setup.py bdist_wheel --dist-dir=./wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
