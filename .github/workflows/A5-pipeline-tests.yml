@@ -117,6 +117,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       pull-requests: write
+      statuses: write
     steps:
       # Default checkout pulls the base repo at the workflow's ref (safe).
       # Do not pass ref: head_sha — that would execute fork code.
