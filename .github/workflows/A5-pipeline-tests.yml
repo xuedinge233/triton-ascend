@@ -117,6 +117,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       pull-requests: write
+      statuses: write
     steps:
       # Default checkout pulls the base repo at the workflow's ref (safe).
       # Do not pass ref: head_sha — that would execute fork code.
@@ -134,14 +135,16 @@ jobs:
           # Title/body are mutable by the PR author at any time — same race
           # the original artifact collector had.
           P=$(gh pr view "$PR_ID" --repo "${{ github.repository }}" \
-                --json title,body,baseRefName)
+                --json title,body,baseRefName,headRefOid)
           PR_TITLE=$(echo "$P" | jq -r .title)
           PR_DESC=$(echo  "$P" | jq -r '.body // ""')
           BRANCH_B=$(echo "$P" | jq -r .baseRefName)
+          HEAD_SHA=$(echo "$P" | jq -r .headRefOid)
 
           {
             echo "pr_id=$PR_ID"
             echo "branch_b=$BRANCH_B"
+            echo "head_sha=$HEAD_SHA"
           } >> "$GITHUB_OUTPUT"
 
           # PR_TITLE / PR_DESC may contain newlines; pass via env file as multi-line values.
@@ -153,6 +156,19 @@ jobs:
             printf '%s\n' "$PR_DESC"
             echo "__EOF__"
           } >> "$GITHUB_ENV"
+
+      - name: Set commit status (pending)
+        if: steps.ctx.outputs.head_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA:      ${{ steps.ctx.outputs.head_sha }}
+          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
+            -f state=pending \
+            -f context='A5 Pipeline Tests' \
+            -f description='Pipeline running' \
+            -f target_url="$TARGET"
 
       - name: Trigger pipeline
         id: run
@@ -290,19 +306,20 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upsert sticky comment (final)
-        if: always() && steps.ctx.outputs.pr_id != ''
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          number: ${{ steps.ctx.outputs.pr_id }}
-          header: blue-yellow
-          message: |
-            ${{ steps.run.outcome == 'success' && '✅' || '❌' }} **Blue-Yellow pipeline: ${{ steps.final.outputs.status }}**
-
-            - msg: `${{ steps.final.outputs.msg }}`
-            - blueRecordId: `${{ steps.final.outputs.blueRecordId }}`
-            ${{ steps.final.outputs.yellowPipelineUrl != '' && format('- [yellow pipeline]({0})', steps.final.outputs.yellowPipelineUrl) || '' }}
-            - [run logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      - name: Set commit status (final)
+        if: always() && steps.ctx.outputs.head_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA:      ${{ steps.ctx.outputs.head_sha }}
+          STATE:    ${{ steps.run.outcome == 'success' && 'success' || 'failure' }}
+          DESC:     ${{ steps.final.outputs.status }}
+          TARGET:   ${{ steps.final.outputs.yellowPipelineUrl != '' && steps.final.outputs.yellowPipelineUrl || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
+            -f state="$STATE" \
+            -f context='A5 Pipeline Tests' \
+            -f description="${DESC:-UNKNOWN}" \
+            -f target_url="$TARGET"
 
   cleanup:
     if: github.event_name == 'pull_request_target'
