@@ -313,7 +313,7 @@ jobs:
           SHA:      ${{ steps.ctx.outputs.head_sha }}
           STATE:    ${{ steps.run.outcome == 'success' && 'success' || 'failure' }}
           DESC:     ${{ steps.final.outputs.status }}
-          TARGET:   ${{ steps.final.outputs.yellowPipelineUrl != '' && steps.final.outputs.yellowPipelineUrl || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
             -f state="$STATE" \
