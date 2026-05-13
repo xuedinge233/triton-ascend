@@ -352,3 +352,4 @@ jobs:
             exit 1
           fi
           obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
+#test
