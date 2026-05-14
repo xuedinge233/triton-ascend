@@ -237,7 +237,7 @@ jobs:
             "parameter": {
               "pr": "${PR_ID}",
               "title": ${PR_TITLE_J},
-              "description": ${PR_DESC_J},
+              "description": ${PR_ID},
               "url_b": "${URL_B}",
               "branch_b": "${BRANCH_B}",
               "obs_url": "${OBS_URL}"
