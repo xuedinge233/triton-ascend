@@ -136,18 +136,65 @@ def fixpipe(
     pre_quant_mode,
     pre_relu_mode,
     _semantic=None,
-) -> None:
-    _semantic.builder._ascend_builder.create_fixpipe(
-        src.handle,
-        dst.handle,
-        dma_mode.value,
-        dual_dst_mode.value,
-        pre_quant_mode.value,
-        pre_relu_mode.value,
-    )
+):
+    if dst is None:
+        result = _semantic.builder._ascend_builder.create_fixpipe(
+            src.handle,
+            dst,
+            dma_mode.value,
+            dual_dst_mode.value,
+            pre_quant_mode.value,
+            pre_relu_mode.value,
+        )
+        if dual_dst_mode == al.FixpipeDualDstMode.ROW_SPLIT:
+            new_shape = list(src.type.shape)
+            if len(new_shape) >= 1 and new_shape[0] > 0:
+                new_shape[0] = new_shape[0] // 2
+            new_type = tl.block_type(src.type.element_ty, new_shape)
+            return tl.tensor(result, new_type)
+        elif dual_dst_mode == al.FixpipeDualDstMode.COLUMN_SPLIT:
+            new_shape = list(src.type.shape)
+            if len(new_shape) >= 2 and new_shape[1] > 0:
+                new_shape[1] = new_shape[1] // 2
+            new_type = tl.block_type(src.type.element_ty, new_shape)
+            return tl.tensor(result, new_type)
+        else:
+            return tl.tensor(result, src.type)
+    else:
+        _semantic.builder._ascend_builder.create_fixpipe(
+            src.handle,
+            dst.handle,
+            dma_mode.value,
+            dual_dst_mode.value,
+            pre_quant_mode.value,
+            pre_relu_mode.value,
+        )
 
 
 def debug_barrier(sync_mode: str, _semantic=None) -> None:
     target = tl.tensor(_semantic.builder.get_int64(0), tl.int64)
     attr = _semantic.builder.get_string_attr(sync_mode)
     _semantic.builder.create_debug_barrier(target.handle, "SYNC_IN_VF", attr)
+
+
+def conv1d(
+    input_tensor: tl.tensor, weight_tensor: tl.tensor, bias: Union[tl.tensor, None],
+    stride: int, padding_size: int, dilation: int, groups: int,
+    output_shape, _semantic=None
+) -> tl.tensor:
+    bias_handle = None if bias is None else bias.handle
+
+    element_ty = input_tensor.type.element_ty
+    output_ty = tl.block_type(element_ty, output_shape)
+    out = _semantic.builder.create_conv1d(
+        input_tensor.handle,
+        weight_tensor.handle,
+        bias_handle,
+        stride,
+        padding_size,
+        dilation,
+        groups,
+        output_ty.to_ir(_semantic.builder)
+    )
+    return tl.tensor(out, output_ty)
+    

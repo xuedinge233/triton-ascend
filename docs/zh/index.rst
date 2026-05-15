@@ -27,7 +27,10 @@ Triton Ascend
     :maxdepth: 2
     :caption: Triton 算子开发指南
 
-    programming_guide.md
+    programming_guide/index.md
+    programming_guide/vector_operator.md
+    programming_guide/cube_operator.md
+    programming_guide/cv_fusion_operator.md
 
 .. toctree::
     :maxdepth: 2
@@ -40,12 +43,13 @@ Triton Ascend
     :maxdepth: 2
     :caption: 典型算子样例
 
-    example/index.md
+    examples/index.md
 
 .. toctree::
     :maxdepth: 2
     :caption: 算子调试与调优
 
+    autotune_guide.md
     debug_guide/debugging.md
     debug_guide/profiling.md
 
@@ -57,6 +61,12 @@ Triton Ascend
     triton_api/triton/index.md
 
 .. toctree::
+    :maxdepth: 1
+    :caption: Libdevice 开发者手册
+
+    libdevice/simt/libdevice_simt_developer_guide.md
+
+.. toctree::
     :maxdepth: 2
     :caption: 昇腾扩展 API 接口说明
 
@@ -64,9 +74,9 @@ Triton Ascend
 
 .. toctree::
     :maxdepth: 1
-    :caption: 环境变量
+    :caption: 环境变量和编译选项
 
-    environment_variable.md
+    environment_variable_and_compiler_options_reference.md
 
 .. toctree::
     :maxdepth: 1

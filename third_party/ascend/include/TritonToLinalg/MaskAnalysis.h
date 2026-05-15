@@ -103,6 +103,8 @@ public:
     return !start && !end && !scalar && dims.size() != 0 && offsets.size() != 0;
   }
 
+  bool isMemrefSubviewValid(Value source, OpBuilder &builder) const;
+
   // parse value recursively
   LogicalResult parse(Value operand, const Location &loc, OpBuilder &builder);
 
@@ -197,6 +199,10 @@ private:
   // Operand is the result of expand_dims
   LogicalResult parseExpandDims(triton::ExpandDimsOp expandDimsOp,
                                 const Location &loc, OpBuilder &builder);
+
+  // Operand is the result of insert
+  LogicalResult parseInsert(tensor::InsertOp insertOp, const Location &loc,
+                            OpBuilder &builder);
 };
 
 std::optional<MaskState> runMaskAnalysis(Operation *op, OpBuilder &builder);

@@ -356,7 +356,7 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
     bool shapedResult = true;
     for (auto result : op->getResults())
       shapedResult &= isa<ShapedType>(result.getType());
-    if (!shapedResult || isa<LoopLikeOpInterface, scf::IfOp>(op)) {
+    if (!shapedResult || isa<LoopLikeOpInterface, scf::IfOp, arith::SelectOp>(op)) {
       LLVM_DEBUG({ op->setAttr("MixUse", UnitAttr::get(context)); });
       return;
     }
@@ -541,6 +541,12 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
   // Remove MetaUse in case of MixUse existing in the op
   funcOp.walk([&](Operation *op) {
     if (isMetaUse(op) && isMixUse(op)) {
+      op->removeAttr("MetaUse");
+    }
+  });
+  // hivm.custom present library call, shouldn't be metause
+  funcOp.walk([&](hivm::CustomOp op) {
+    if (isMetaUse(op)) {
       op->removeAttr("MetaUse");
     }
   });

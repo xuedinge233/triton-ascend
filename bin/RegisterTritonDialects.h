@@ -1,6 +1,7 @@
 #pragma once
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
 #include "ascend/include/AutoBlockify/Passes.h"
+#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
@@ -151,12 +152,16 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 
+  // DynamicCVPipeline passes
+  mlir::triton::registerAddControlFlowConditionPasses();
+
   registry.insert<
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
+      mlir::tensor::TensorDialect,
       mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
       mlir::triton::amdgpu::TritonAMDGPUDialect,
@@ -165,5 +170,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::gluon::GluonDialect,
       mlir::triton::ascend::TritonAscendDialect,
       mlir::hivm::HIVMDialect, mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,
-      mlir::annotation::AnnotationDialect, mlir::hfusion::HFusionDialect>();
+      mlir::annotation::AnnotationDialect, mlir::hfusion::HFusionDialect,
+      mlir::tensor::TensorDialect, mlir::linalg::LinalgDialect,
+      mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,
+      mlir::func::FuncDialect>();
 }

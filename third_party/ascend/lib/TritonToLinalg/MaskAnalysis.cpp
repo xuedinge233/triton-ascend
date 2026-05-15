@@ -126,6 +126,8 @@ LogicalResult MaskState::parse(Value operand, const Location &loc,
           [&](auto op) { return this->parseDiv(op, loc, builder); })
       .Case<arith::SelectOp>(
           [&](auto op) { return this->parseSel(op, loc, builder); })
+      .Case<tensor::InsertOp>(
+          [&](auto op) { return this->parseInsert(op, loc, builder); })
       .Default([&](Operation *op) { return failure(); });
 }
 
@@ -192,6 +194,46 @@ memref::SubViewOp MaskState::getSubview(Value source, const Location &loc,
       memref::SubViewOp::inferResultType(sourceType, fixedOffsets, fixedDims, strides);
   return builder.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType),
                                            source, fixedOffsets, fixedDims, strides);
+}
+
+// In llvm later version, for each dimension, assert that:
+// 0 <= offset < dim_size
+// 0 <= offset + (size - 1) *stride < dim_size
+// To adatpt to this change, add this verification to avoid llvm assert error
+// And currently, in the function calling scenario, the stride coefficient is always 1
+bool MaskState::isMemrefSubviewValid(Value source, OpBuilder &builder) const
+{
+  auto sourceType = cast<MemRefType>(source.getType());
+  int64_t rank = sourceType.getRank();
+
+  SmallVector<OpFoldResult> fixedOffsets(offsets.begin(), offsets.end());
+  SmallVector<OpFoldResult> fixedDims(dims.begin(), dims.end());
+  fixedOffsets.resize(rank, builder.getIndexAttr(0));
+  fixedDims.resize(rank, builder.getIndexAttr(1));
+
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t sourceSize = sourceType.getDimSize(i);
+    if (ShapedType::isDynamic(sourceSize)) continue;
+    std::optional<int64_t> offsetVal = mlir::getConstantIntValue(fixedOffsets[i]);
+    std::optional<int64_t> dimVal = mlir::getConstantIntValue(fixedDims[i]);
+    if (offsetVal.has_value() && dimVal.has_value()) {
+      if (offsetVal.value() >= sourceSize || offsetVal.value() < 0) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "MemrefSubview offset check faied at dim " << i << "sourceSize :"<< sourceSize << "offsetVal :" << offsetVal << "\n";
+      });
+        return false;
+      }
+
+      int64_t computedEnd = offsetVal.value() + dimVal.value();
+      if (computedEnd > sourceSize) {
+         LLVM_DEBUG({
+          llvm::dbgs() << "MemrefSubview offset end check faied at dim " << i << "dimVal :"<< dimVal << "offsetVal :" << offsetVal << "\n";
+      });
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 static memref::SubViewOp createSubview(Value src, const Location &loc,
@@ -678,6 +720,23 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
   this->offsets.insert(this->offsets.begin() + axis, builder.getIndexAttr(0));
 
   return success();
+}
+
+LogicalResult MaskState::parseInsert(tensor::InsertOp insertOp,
+                                     const Location &loc,
+                                     OpBuilder &builder)
+{
+  if (auto tensorType = dyn_cast<RankedTensorType>(insertOp.getType())) {
+    if (llvm::all_of(tensorType.getShape(), [](int64_t dim) { return dim == 1; })) {
+      SmallVector<Value> indices(tensorType.getRank(), builder.create<arith::ConstantIndexOp>(loc, 0));
+      auto scalarlizeTensor = builder.create<tensor::ExtractOp>(loc, insertOp, indices).getResult();
+      this->offsets = SmallVector<OpFoldResult>(tensorType.getRank(), builder.getIndexAttr(0));
+      this->dims = SmallVector<OpFoldResult>(tensorType.getRank(), builder.getIndexAttr(1));
+      this->scalar = getOpFoldResultOfLayoutInfo(scalarlizeTensor, builder);
+      return success();
+    }
+  }
+  return failure();
 }
 
 void MaskState::eraseInsertedOps(Operation *rawOp, PatternRewriter &rewriter) {

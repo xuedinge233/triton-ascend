@@ -42,7 +42,8 @@ __all__ = [
     "sync_block_all",
     "sync_block_set",
     "sync_block_wait",
-    "SYNC_IN_VF"
+    "SYNC_IN_VF",
+    "conv1d"
 ]
 
 import enum
@@ -273,11 +274,11 @@ class FixpipePreReluMode(enum.Enum):
 @builtin
 def fixpipe(
     src: tl.tensor,
-    dst: bl.buffer,
+    dst: Union[None, bl.buffer] = None,
     dma_mode: FixpipeDMAMode = FixpipeDMAMode.NZ2ND,
     dual_dst_mode: FixpipeDualDstMode = FixpipeDualDstMode.NO_DUAL,
     _semantic=None,
-) -> None:
+) -> Union[None, tl.tensor]:
     """
     Directly store a tensor on L0C to a local buffer via fixpipe.
     Fixpipe is pipeline that performing data movement from L0C to other memory hierarchies.
@@ -286,50 +287,66 @@ def fixpipe(
 
     :param src: the source tensor, Must be located in the l0C memory region.
     :type src: tl.tensor
-    :param dst: The destination buffer, Must be located in the UB memory region.
-    :type dst: bl.buffer
+    :param dst: The destination buffer in UB. If None, an empty tensor will be created. 
+                Must be buffer type in UB if provided.
+    :type dst: bl.buffer | None
     :param dma_mode: DMA transfer mode, "nz2nd" enables NZ to ND layout transformation
-    :type dma_mode: str
+    :type dma_mode: FixpipeDMAMode
+    :param dual_dst_mode: Dual destination mode for split operations
+    :type dual_dst_mode: FixpipeDualDstMode
+    :return: If dst is None, returns the created tensor; otherwise returns None.
+    :rtype: tl.tensor | None
     """
     if not _semantic.builder.is_910_95():
         raise RuntimeError("this feature is only supported on Ascend910_95")
     if not isinstance(src, tl.tensor):
         raise TypeError("src is not of tensor type")
-    elif not isinstance(dst, bl.buffer):
-        raise TypeError("dst is not of buffer type")
-    if dst.space != ascend_address_space.UB:
-        raise TypeError("dst must be located in the UB memory region")
 
-    if len(dst.shape) == 2 and (
-        dst.type.element_ty == tl.float32 or dst.type.element_ty == tl.int32
-    ):
-        N = dst.shape[1]
-        if N % 8 != 0:
-            raise ValueError("32b Fixpipe last dim must be aligned to 8")
-        if (dma_mode != FixpipeDMAMode.NZ2ND) and (N % 16 != 0):
-            raise ValueError("32b non-NZ2ND Fixpipe last dim must be aligned to 16")
-        if (dual_dst_mode == FixpipeDualDstMode.COLUMN_SPLIT) and (N % 32 != 0):
-            raise ValueError(
-                "32b Column split dual Fixpipe last dim must be aligned to 32"
-            )
-        M = dst.shape[0]
-        if (dma_mode == FixpipeDMAMode.NZ2DN) and (M % 8 != 0):
-            raise ValueError("32b NZ2DN Fixpipe first dim must be aligned to 8")
-    dst16bits = (
-        dst.type.element_ty == tl.float16
-        or dst.type.element_ty == tl.int16
-        or dst.type.element_ty == tl.bfloat16
-    )
-    if len(dst.shape) == 2 and dst16bits:
-        N = dst.shape[1]
-        if N % 16 != 0:
-            raise ValueError("16b Fixpipe last dim must be aligned to 16")
-        M = dst.shape[0]
-        if (dma_mode == FixpipeDMAMode.NZ2DN) and (M % 16 != 0):
-            raise ValueError("16b NZ2DN Fixpipe first dim must be aligned to 16")
+    if dst is not None:
+        if not isinstance(dst, bl.buffer):
+            raise TypeError("dst must be buffer type or None")
+        if dst.space != ascend_address_space.UB:
+            raise TypeError("dst's AddressSpace must be UB")
+        if len(dst.shape) == 2 and (
+            dst.type.element_ty == tl.float32 or dst.type.element_ty == tl.int32
+        ):
+            N = dst.shape[1]
+            if N % 8 != 0:
+                raise ValueError("32b Fixpipe last dim must be aligned to 8")
+            if (dma_mode != FixpipeDMAMode.NZ2ND) and (N % 16 != 0):
+                raise ValueError(
+                    "32b non-NZ2ND Fixpipe last dim must be aligned to 16"
+                )
+            if (dual_dst_mode == FixpipeDualDstMode.COLUMN_SPLIT) and (N % 32 != 0):
+                raise ValueError(
+                    "32b Column split dual Fixpipe last dim must be aligned to 32"
+                )
+            M = dst.shape[0]
+            if (dma_mode == FixpipeDMAMode.NZ2DN) and (M % 8 != 0):
+                raise ValueError("32b NZ2DN Fixpipe first dim must be aligned to 8")
+        dst16bits = (
+            dst.type.element_ty == tl.float16
+            or dst.type.element_ty == tl.int16
+            or dst.type.element_ty == tl.bfloat16
+        )
+        if len(dst.shape) == 2 and dst16bits:
+            N = dst.shape[1]
+            if N % 16 != 0:
+                raise ValueError("16b Fixpipe last dim must be aligned to 16")
+            M = dst.shape[0]
+            if (dma_mode == FixpipeDMAMode.NZ2DN) and (M % 16 != 0):
+                raise ValueError(
+                    "16b NZ2DN Fixpipe first dim must be aligned to 16"
+                )
 
     return semantic.fixpipe(
-        src, dst, dma_mode, dual_dst_mode, FixpipePreQuantMode.NO_QUANT, FixpipePreReluMode.NO_RELU, _semantic
+        src,
+        dst,
+        dma_mode,
+        dual_dst_mode,
+        FixpipePreQuantMode.NO_QUANT,
+        FixpipePreReluMode.NO_RELU,
+        _semantic,
     )
 
 
@@ -366,3 +383,134 @@ def sub_vec_num(_semantic=None) -> tl.constexpr:
     vector_num = npuUtils.get_aicore_num()
     const_val = cube_num // vector_num
     return tl.constexpr(const_val)
+
+
+@builtin
+def conv1d(
+    input: tl.tensor,
+    weight: tl.tensor,
+    bias: tl.tensor = None,
+    stride=None,
+    padding_size=None,
+    dilation=None,
+    groups=None,
+    _semantic=None
+) -> tl.tensor:
+    """
+    Applies a 1D convolution over an input signal.
+
+    :param input: Input tensor of shape (N, C_in, L_in) or (C_in, L_in). N is a batch size, C denotes a number of channels, L is a length of signal sequence.
+    :type input: tensor
+    :param weight: Weight tensor of shape (C_out, C_in // groups, kernel_size).
+    :type weight: tensor
+    :param bias: Bias tensor of shape (C_out) or None. Default: None.
+    :type bias: tensor or None
+    :param stride: The stride of the convolution kernel. Can be an int or a 1-element tuple.
+    :type stride: int or Tuple[int]
+    :param padding_size: Padding added to both sides of the input. Can be an int, a 1-element tuple, or a string. Can be a string {'valid', 'same'}, single number or a one-element tuple.
+        ``padding_size='valid'`` is the same as no padding. 
+        ``padding_size='same'`` pads the input so the output has the same shape as the input. However, this mode doesn't support any stride values other than 1.
+    :type padding_size: int, Tuple[int], or str
+    :param dilation: The spacing between kernel elements. Can be an int or a 1-element tuple.
+    :type dilation: int or Tuple[int]
+    :param groups: Number of blocked connections from input to output channels.
+    :type groups: int
+
+    **Example:**
+
+    .. code-block:: python
+
+        @triton.jit
+        def conv_kernel(input_ptr, weight_ptr, bias_ptr, output_ptr, N, C, L, K, BLOCK_SIZE: tl.constexpr):
+            # Load a tile of input and weight
+            input_block = tl.load(input_ptr + ...)
+            weight_block = tl.load(weight_ptr + ...)
+
+            # Perform 1D convolution
+            # Using default stride=1, padding_size=0, dilation=1, groups=1
+            conv_output = al.conv1d(
+                input_block,
+                weight_block,
+                bias=None,
+                stride=1,
+                padding_size=0,
+                dilation=1,
+                groups=1,
+            )
+            
+            # Store the result
+            tl.store(output_ptr + ..., conv_output)
+
+    :return: The output tensor of shape (N, C_out, L_out).
+    :rtype: tensor
+    """    
+    
+    stride = _unwrap_if_constexpr(stride)
+    padding_size = _unwrap_if_constexpr(padding_size)
+    dilation = _unwrap_if_constexpr(dilation)
+    groups = _unwrap_if_constexpr(groups)
+
+    # Set default value
+    stride = stride if stride is not None else 1
+    padding_size = padding_size if padding_size is not None else 0
+    dilation = dilation if dilation is not None else 1
+    groups = groups if groups is not None else 1
+
+    if type(bias).__name__ == 'constexpr':
+        bias = getattr(bias, 'value', bias)
+    if bias is not None:
+        assert len(bias.shape) == 1, f"bias must be a 1D tensor (C_out), got {len(bias.shape)}D"
+    assert isinstance(groups, int), f"groups must be an integer, got {groups}"
+    
+    def _check_and_normalize_1d_param(param, name):
+        if param is None:
+            return None
+        if isinstance(param, (list, tuple)):
+            assert len(param) == 1, f"{name} must be an integer or a 1-element tuple, got {param}"
+            return param[0]
+        assert isinstance(param, int), f"{name} must be an integer or a 1-element tuple, got {type(param)}"
+        return param
+
+    stride = _check_and_normalize_1d_param(stride, 'stride')
+    dilation = _check_and_normalize_1d_param(dilation, 'dilation')
+
+    is_batched = len(input.shape) == 3
+    L_in = input.shape[-1]
+    K = weight.shape[2] 
+
+    if isinstance(padding_size, str):
+        assert padding_size in ['same', 'valid'], f"padding_size string must be 'same' or 'valid', got '{padding_size}'"
+    else:
+        padding_size = _check_and_normalize_1d_param(padding_size, 'padding_size')
+    if isinstance(padding_size, str):
+        if padding_size == 'valid':
+            padding_size_int = 0
+        elif padding_size == 'same':
+            #The case where padding_needed is an odd number needs to be handled.
+            if stride != 1:
+                raise ValueError("padding_size='same' is only supported when stride=1")
+            padding_needed = (L_in - 1) * stride + dilation * (K - 1) + 1 - L_in
+            padding_size_int = padding_needed // 2
+    else:
+        padding_size_int = padding_size if padding_size is not None else 0
+    
+    assert len(input.shape) in [2, 3], f"input must be a 2D (C, L) or 3D (N, C, L) tensor, got {len(input.shape)}D"
+    assert len(weight.shape) == 3, f"weight must be a 3D tensor (C_out, C_in // groups, kernel_size), got {len(weight.shape)}D"
+    
+    # Create output type
+    C_in = input.shape[-2] if is_batched else input.shape[0]
+    C_out = weight.shape[0]
+
+    L_in_val = _unwrap_if_constexpr(input.shape[-1])
+    K_val = _unwrap_if_constexpr(weight.shape[2])
+
+    calculation_result = (L_in_val + 2 * padding_size_int - dilation * (K_val - 1) - 1) / stride + 1
+    L_out_val = -int(-calculation_result)
+    if is_batched:
+        output_shape = [input.shape[0], C_out, L_out_val]
+    else:
+        output_shape = [C_out, L_out_val]
+
+    return semantic.conv1d(
+        input, weight, bias, stride, padding_size_int, dilation, groups, output_shape, _semantic
+    )
