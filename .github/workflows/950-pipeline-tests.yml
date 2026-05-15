@@ -169,10 +169,10 @@ jobs:
       - name: Trigger pipeline
         id: run
         env:
+          BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
           APP_CODE:           ${{ secrets.BLUE_YELLOW_APP_CODE }}
           APP_KEY:            ${{ secrets.BLUE_YELLOW_APP_KEY }}
           APP_SECRET:         ${{ secrets.BLUE_YELLOW_APP_SECRET }}
-          BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
           YELLOW_PIPELINE_ID: ${{ vars.YELLOW_PIPELINE_ID }}
           YELLOW_GROUP_ID:    ${{ vars.YELLOW_GROUP_ID }}
           PR_ID:              ${{ steps.ctx.outputs.pr_id }}
@@ -240,15 +240,12 @@ jobs:
           }
           EOF
           )
-          # /start is non-idempotent at the protocol level, so we cannot blindly
-          # retry: a 502 retry can collide with an already-accepted task and
-          # surface as "task already exists". We work around this by (a) reusing
-          # the same BTI across retries so the backend can dedupe, and (b)
-          # treating a duplicate-task response as success (it means the prior
-          # attempt actually got through, only the gateway response was lost).
-          # APIG gateway times out backend calls at ~60s, so allow curl 70s.
+          # /start retry: only on gateway/network failures (502/504,
+          # APIG.0203, curl=000); any other response is terminal. BRI/BTI are
+          # reused across attempts so the backend can dedupe a request the
+          # gateway lost mid-flight. --max-time 70 exceeds APIG's ~60s backend
+          # timeout so curl waits out the 502 instead of giving up first.
           START_OK=false
-          DUP_RE='(exist|duplicate|already|已存在|重复)'
           LAST_R=""; LAST_BODY=""
           for ((I=1; I<=5; I++)); do
             R=$(curl -sS --max-time 70 \
@@ -260,11 +257,6 @@ jobs:
             echo "[start #${I}] HTTP=${R} response: ${BODY}"
 
             if [ "$R" = "200" ] && echo "$BODY" | grep -q '"code":200'; then
-              START_OK=true
-              break
-            fi
-            if echo "$BODY" | grep -Eiq "\"(error_msg|msg|message)\":\"[^\"]*${DUP_RE}"; then
-              echo "[start #${I}] backend reports duplicate task — treating as already-accepted"
               START_OK=true
               break
             fi
@@ -292,8 +284,8 @@ jobs:
           )
 
           ST=""; MSG=""; DONE=false
-          for ((N=1; N<=240; N++)); do
-            sleep 15
+          for ((N=1; N<=720; N++)); do
+            sleep 60
             QHTTP=$(curl -sS --retry 3 --retry-all-errors --retry-delay 5 \
               -o /tmp/by_query.body -w '%{http_code}' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
