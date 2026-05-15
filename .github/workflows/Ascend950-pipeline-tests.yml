@@ -247,6 +247,7 @@ jobs:
           # timeout so curl waits out the 502 instead of giving up first.
           START_OK=false
           LAST_R=""; LAST_BODY=""
+          DUP_RE='(exist|duplicate|already)'
           for ((I=1; I<=5; I++)); do
             R=$(curl -sS --max-time 70 \
               -o /tmp/by_start.body -w '%{http_code}' \
@@ -257,6 +258,11 @@ jobs:
             echo "[start #${I}] HTTP=${R} response: ${BODY}"
 
             if [ "$R" = "200" ] && echo "$BODY" | grep -q '"code":200'; then
+              START_OK=true
+              break
+            fi
+            if echo "$BODY" | grep -Eiq "\"(error_msg|msg|message)\":\"[^\"]*${DUP_RE}"; then
+              echo "[start #${I}] backend reports duplicate task — treating as already-accepted"
               START_OK=true
               break
             fi
