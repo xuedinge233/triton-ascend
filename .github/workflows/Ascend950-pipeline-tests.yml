@@ -114,7 +114,6 @@ jobs:
          needs.publish.outputs.pr_num != '')
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     permissions:
       pull-requests: write
       statuses: write
@@ -310,7 +309,7 @@ jobs:
           done
 
           if [ "$DONE" != "true" ]; then
-            write_status "TIMEOUT" "polling exceeded 240 attempts without a terminal status"
+            write_status "TIMEOUT" "polling exceeded 720 attempts without a terminal status"
             exit 1
           fi
           echo "terminal status: ${ST} - ${MSG}"
