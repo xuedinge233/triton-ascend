@@ -10,7 +10,7 @@ jobs:
   prepare:
     runs-on: linux-amd64-cpu-8
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/action-runner:latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
     outputs:
       matrix-ASCEND: ${{ steps.set-matrix.outputs.matrix-ASCEND }}
     steps:
