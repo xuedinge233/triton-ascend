@@ -8,9 +8,9 @@ on:
 
 jobs:
   prepare:
-    runs-on: linux-amd64-cpu-8
+    runs-on: linux-amd64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ubuntu:act-22.04
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
     outputs:
       matrix-ASCEND: ${{ steps.set-matrix.outputs.matrix-ASCEND }}
     steps:

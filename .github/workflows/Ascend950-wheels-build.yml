@@ -30,9 +30,9 @@ concurrency:
 jobs:
   Build-Wheels:
     timeout-minutes: 360
-    runs-on: linux-amd64-cpu-16
+    runs-on: linux-amd64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
 
     permissions:
       id-token: write
@@ -71,14 +71,14 @@ jobs:
           TRITON_BUILD_WITH_O1: true
           TRITON_BUILD_PROTON: OFF
           TRITON_WHEEL_NAME: triton-ascend
-          TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
+          TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=OFF"
         run: |
           mkdir -p "$CCACHE_DIR"
           ccache --zero-stats
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
-          MAX_JOBS="$NUM_PROCS" \
-          python setup.py bdist_wheel --dist-dir=./wheelhouse
+          cd python
+          MAX_JOBS="$NUM_PROCS" python setup.py bdist_wheel --dist-dir="${GITHUB_WORKSPACE}/wheelhouse"
 
       - uses: actions/upload-artifact@v4
         with:
