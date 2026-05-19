@@ -9,6 +9,8 @@ on:
 jobs:
   prepare:
     runs-on: linux-amd64-cpu-8
+    container:
+      image: ghcr.io/actions/actions-runner:latest
     outputs:
       matrix-ASCEND: ${{ steps.set-matrix.outputs.matrix-ASCEND }}
     steps:
