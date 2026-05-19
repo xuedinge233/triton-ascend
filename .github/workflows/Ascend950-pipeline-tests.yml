@@ -42,7 +42,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: linux-amd64-cpu-8
     container:
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.m.daocloud.io/actions/actions-runner
     permissions:
       contents: read
       actions: read
@@ -117,7 +117,7 @@ jobs:
       )
     runs-on: linux-amd64-cpu-8
     container:
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.m.daocloud.io/actions/actions-runner
     permissions:
       pull-requests: write
       statuses: write
