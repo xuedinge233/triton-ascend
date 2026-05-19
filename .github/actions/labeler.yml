@@ -34,6 +34,3 @@ release:
           - 'version.txt'
   - head-branch: ['^release/']
   - base-branch: ['^release/']
-
-cherry-pick:
-  - head-branch: ['^cherry-pick/', '^cherry_pick/']
