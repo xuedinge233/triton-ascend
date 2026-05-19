@@ -42,7 +42,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: linux-amd64-cpu-8
     container:
-      image: ghcr.m.daocloud.io/actions/actions-runner
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/action-runner:latest
     permissions:
       contents: read
       actions: read
@@ -117,7 +117,7 @@ jobs:
       )
     runs-on: linux-amd64-cpu-8
     container:
-      image: ghcr.m.daocloud.io/actions/actions-runner
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/action-runner:latest
     permissions:
       pull-requests: write
       statuses: write
