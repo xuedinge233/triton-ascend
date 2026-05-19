@@ -42,7 +42,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: linux-amd64-cpu-8
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.11
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ubuntu:act-22.04
     permissions:
       contents: read
       actions: read
@@ -117,7 +117,7 @@ jobs:
       )
     runs-on: linux-amd64-cpu-8
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.11
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ubuntu:act-22.04
     permissions:
       pull-requests: write
       statuses: write
