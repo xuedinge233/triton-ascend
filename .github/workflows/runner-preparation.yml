@@ -8,7 +8,7 @@ on:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu-8
     outputs:
       matrix-ASCEND: ${{ steps.set-matrix.outputs.matrix-ASCEND }}
     steps:
