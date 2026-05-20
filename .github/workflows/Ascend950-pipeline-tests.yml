@@ -42,7 +42,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: linux-aarch64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/triton:github_action
     permissions:
       contents: read
       actions: read
@@ -55,11 +55,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: .github/actions/setup-obsutil
-
-      - name: Install the gh cli
-        uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
-        with:
-          gh-cli-version: 2.65.0
 
       - name: Resolve PR number
         id: pr
@@ -122,7 +117,7 @@ jobs:
       )
     runs-on: linux-aarch64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/triton:github_action
     permissions:
       pull-requests: write
       statuses: write
@@ -130,11 +125,6 @@ jobs:
       # Default checkout pulls the base repo at the workflow's ref (safe).
       # Do not pass ref: head_sha — that would execute fork code.
       - uses: actions/checkout@v4
-
-      - name: Install the gh cli
-        uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
-        with:
-          gh-cli-version: 2.65.0
 
       - name: Resolve PR context
         id: ctx
