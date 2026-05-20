@@ -16,6 +16,8 @@ RUN python3 -m pip install --upgrade cmake ninja sccache lit nanobind
 # Install MLIR's Python Dependencies
 RUN python3 -m pip install -r /source/llvm-project/mlir/python/requirements.txt
 
+RUN dnf install -y clang-toolset-13.0
+
 RUN command -v clang++
 RUN clang++ --version
 
