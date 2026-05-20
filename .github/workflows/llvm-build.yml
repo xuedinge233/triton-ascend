@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 240
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         config:
         - {runner: 'Ubuntu 22.04', runs_on: 'ubuntu-22.04', target-os: 'ubuntu', arch: 'x64'}
