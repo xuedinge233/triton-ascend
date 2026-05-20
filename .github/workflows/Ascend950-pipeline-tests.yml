@@ -56,6 +56,11 @@ jobs:
         with:
           sparse-checkout: .github/actions/setup-obsutil
 
+      - name: Install the gh cli
+        uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
+        with:
+          gh-cli-version: 2.65.0
+
       - name: Resolve PR number
         id: pr
         env:
@@ -126,8 +131,14 @@ jobs:
       # Do not pass ref: head_sha — that would execute fork code.
       - uses: actions/checkout@v4
 
+      - name: Install the gh cli
+        uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
+        with:
+          gh-cli-version: 2.65.0
+
       - name: Resolve PR context
         id: ctx
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           # workflow_dispatch → input; workflow_run → publish output.
@@ -171,6 +182,7 @@ jobs:
 
       - name: Trigger pipeline
         id: run
+        shell: bash
         env:
           BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
           APP_CODE:           ${{ secrets.BLUE_YELLOW_APP_CODE }}
