@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 360
     runs-on: linux-aarch64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
 
     permissions:
       id-token: write
