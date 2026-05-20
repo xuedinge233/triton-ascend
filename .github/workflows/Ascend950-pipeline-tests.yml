@@ -51,10 +51,7 @@ jobs:
       pr_num: ${{ steps.pr.outputs.num }}
       wheel_name: ${{ steps.wheel.outputs.name }}
     steps:
-      # Sparse checkout: only the composite action is needed; no source tree.
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/actions/setup-obsutil
 
       - name: Resolve PR number
         id: pr
