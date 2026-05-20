@@ -71,16 +71,17 @@ jobs:
           TRITON_BUILD_WITH_O1: true
           TRITON_BUILD_PROTON: OFF
           TRITON_WHEEL_NAME: triton-ascend
-          TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=OFF"
+          TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON"
         run: |
           mkdir -p "$CCACHE_DIR"
           ccache --zero-stats
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
-          cd python
-          MAX_JOBS="$NUM_PROCS" python setup.py bdist_wheel --dist-dir="${GITHUB_WORKSPACE}/wheelhouse"
+          MAX_JOBS="$NUM_PROCS" \
+          python setup.py bdist_wheel --dist-dir=./wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
           name: cibw-wheels-manylinux_2_28_x86_64-wheels-upload
           path: ./wheelhouse/*.whl
+#test
