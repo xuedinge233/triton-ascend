@@ -16,6 +16,17 @@ RUN python3 -m pip install --upgrade cmake ninja sccache lit nanobind
 # Install MLIR's Python Dependencies
 RUN python3 -m pip install -r /source/llvm-project/mlir/python/requirements.txt
 
+
+RUN which clang++
+RUN clang++ --version
+RUN which lld
+RUN ldd --version
+
+RUN clang++ --version
+RUN grep -n "uint32_t" /source/llvm-project/mlir/include/mlir/Target/SPIRV/Deserialization.h
+RUN sed -n '1,40p' /source/llvm-project/mlir/include/mlir/Target/SPIRV/Deserialization.h
+
+
 # Configure, Build, Test, and Install LLVM
 RUN cmake -GNinja -Bbuild \
   -DCMAKE_BUILD_TYPE=Release \
