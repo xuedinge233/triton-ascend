@@ -42,7 +42,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: linux-aarch64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
     permissions:
       contents: read
       actions: read
@@ -51,10 +51,7 @@ jobs:
       pr_num: ${{ steps.pr.outputs.num }}
       wheel_name: ${{ steps.wheel.outputs.name }}
     steps:
-      # Sparse checkout: only the composite action is needed; no source tree.
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/actions/setup-obsutil
 
       - name: Resolve PR number
         id: pr
@@ -117,7 +114,7 @@ jobs:
       )
     runs-on: linux-aarch64-cpu-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/actions/actions-runner:latest
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
     permissions:
       pull-requests: write
       statuses: write
@@ -128,6 +125,7 @@ jobs:
 
       - name: Resolve PR context
         id: ctx
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           # workflow_dispatch → input; workflow_run → publish output.
@@ -171,6 +169,7 @@ jobs:
 
       - name: Trigger pipeline
         id: run
+        shell: bash
         env:
           BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
           APP_CODE:           ${{ secrets.BLUE_YELLOW_APP_CODE }}
