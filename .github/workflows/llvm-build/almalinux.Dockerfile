@@ -1,4 +1,4 @@
-FROM almalinux:8
+FROM almalinux:8.9-20240410
 ARG llvm_dir=llvm-project
 # Add the cache artifacts and the LLVM source tree to the container
 COPY sccache /sccache
