@@ -384,6 +384,7 @@ jobs:
         with:
           ak: ${{ secrets.OBS_AK }}
           sk: ${{ secrets.OBS_SK }}
+          arch: amd64
 
       - name: Remove PR wheels from OBS
         env:
