@@ -1,0 +1,207 @@
+name: Slash Command
+
+# PR-comment ChatOps. Recognised commands (must appear on the first line):
+#   /rebuild              re-run Ascend950 Wheels Build (kicks off the whole
+#                         pipeline; downstream Pipeline Tests cascades via
+#                         workflow_run)
+#   /retry                re-run only the failed jobs of the most recent run
+#                         (either Wheels Build or Pipeline Tests) for this PR
+#   /retry <job-name>     re-run one specific job by name in that most recent
+#                         run
+#
+# Runs in base-repo context (issue_comment), so secrets are available even for
+# fork PRs. We never check out PR head — only GitHub API calls.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write          # rerun runs / jobs
+      pull-requests: read     # read PR head ref
+      issues: write           # post reactions on the comment
+    steps:
+      - name: Parse command
+        id: cmd
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          # Only the first line is treated as the command; the rest is ignored.
+          FIRST=$(printf '%s' "$BODY" | head -n1 | tr -d '\r')
+          NAME=$(printf '%s' "$FIRST" | awk '{print $1}')
+          ARG=$(printf  '%s' "$FIRST" | awk '{$1=""; sub(/^ /, ""); print}')
+          case "$NAME" in
+            /rebuild|/retry) match=true  ;;
+            *)               match=false ;;
+          esac
+          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
+          echo "arg=$ARG"     >> "$GITHUB_OUTPUT"
+          echo "match=$match" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if not a recognised command
+        if: steps.cmd.outputs.match != 'true'
+        run: echo "Not a recognised slash command; exiting." && exit 0
+
+      - name: Check author permission
+        id: perm
+        if: steps.cmd.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR:    ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          LEVEL=$(gh api "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+                    --jq .permission 2>/dev/null || echo none)
+          echo "level=$LEVEL" >> "$GITHUB_OUTPUT"
+          case "$LEVEL" in
+            admin|write|maintain) echo "ok=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                    echo "ok=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: React 👎 and stop (no permission)
+        if: steps.cmd.outputs.match == 'true' && steps.perm.outputs.ok != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=-1
+          exit 1
+
+      - name: React 👀 (acknowledged)
+        if: steps.cmd.outputs.match == 'true' && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=eyes
+
+      - name: Resolve PR head branch
+        id: pr
+        if: steps.cmd.outputs.ok != 'false' && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR:       ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # head_branch on a run is the branch name (not owner-prefixed), which
+          # is what the Actions API expects for filtering.
+          BR=$(gh pr view "$PR" --repo "${{ github.repository }}" \
+                 --json headRefName --jq .headRefName)
+          echo "branch=$BR" >> "$GITHUB_OUTPUT"
+
+      # ---------- /rebuild: rerun Wheels Build from scratch ----------
+      - name: Find latest Wheels Build run
+        id: wb
+        if: steps.cmd.outputs.name == '/rebuild' && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BR:       ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/Ascend950-wheels-build.yml/runs?branch=${BR}&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "No Wheels Build run found for branch ${BR}." >&2
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Rerun Wheels Build
+        if: steps.cmd.outputs.name == '/rebuild' && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/actions/runs/${{ steps.wb.outputs.run_id }}/rerun"
+
+      # ---------- /retry: rerun failed (or one specific) job of latest run ----------
+      - name: Find latest run across pipelines
+        id: latest
+        if: steps.cmd.outputs.name == '/retry' && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BR:       ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # Pick the most recently created run between Wheels Build and Pipeline
+          # Tests on this branch. Pipeline Tests is workflow_run-triggered, so
+          # its head_branch is the upstream branch name — same key works.
+          PICK=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=20" \
+            --jq '[.workflow_runs[]
+                    | select(.name=="Ascend950 Wheels Build"
+                          or .name=="Ascend950 Pipeline Tests")]
+                  | sort_by(.created_at) | reverse | .[0]
+                  | {id, name}')
+          if [ -z "$PICK" ] || [ "$PICK" = "null" ]; then
+            echo "No matching run found for branch ${BR}." >&2
+            exit 1
+          fi
+          echo "run_id=$(echo "$PICK"   | jq -r .id)"   >> "$GITHUB_OUTPUT"
+          echo "run_name=$(echo "$PICK" | jq -r .name)" >> "$GITHUB_OUTPUT"
+
+      - name: Rerun failed jobs (no arg)
+        if: >-
+          steps.cmd.outputs.name == '/retry' &&
+          steps.perm.outputs.ok == 'true' &&
+          steps.cmd.outputs.arg == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/actions/runs/${{ steps.latest.outputs.run_id }}/rerun-failed-jobs"
+
+      - name: Rerun one named job
+        if: >-
+          steps.cmd.outputs.name == '/retry' &&
+          steps.perm.outputs.ok == 'true' &&
+          steps.cmd.outputs.arg != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID:   ${{ steps.latest.outputs.run_id }}
+          JOB_NAME: ${{ steps.cmd.outputs.arg }}
+        run: |
+          set -euo pipefail
+          # /jobs returns only the latest attempt's jobs by default — that is
+          # exactly what we want to act on. We match on exact job name.
+          JOB_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                    --jq ".jobs[] | select(.name==\"${JOB_NAME}\") | .id" | head -n1)
+          if [ -z "$JOB_ID" ]; then
+            echo "No job named '${JOB_NAME}' in run ${RUN_ID}." >&2
+            exit 1
+          fi
+          # Note: the single-job rerun endpoint requires the job to be from the
+          # latest attempt, which it is. GitHub will rerun this job plus its
+          # dependents (per their docs).
+          gh api -X POST \
+            "repos/${{ github.repository }}/actions/jobs/${JOB_ID}/rerun"
+
+      - name: React 🚀 (dispatched)
+        if: success() && steps.perm.outputs.ok == 'true' && steps.cmd.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=rocket
+
+      - name: React 😕 (failed to dispatch)
+        if: failure() && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=confused
