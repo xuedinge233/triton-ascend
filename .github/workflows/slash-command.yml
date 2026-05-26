@@ -4,10 +4,11 @@ name: Slash Command
 #   /rebuild              re-run Ascend950 Wheels Build (kicks off the whole
 #                         pipeline; downstream Pipeline Tests cascades via
 #                         workflow_run)
-#   /retry                re-run only the failed jobs of the most recent run
-#                         (either Wheels Build or Pipeline Tests) for this PR
+#   /retry                re-run only the failed jobs of the most recent failed
+#                         PR run on this branch (any workflow triggered by
+#                         pull_request or downstream workflow_run)
 #   /retry <job-name>     re-run one specific job by name in that most recent
-#                         run
+#                         failed run
 #
 # Runs in base-repo context (issue_comment), so secrets are available even for
 # fork PRs. We never check out PR head — only GitHub API calls.
@@ -127,7 +128,7 @@ jobs:
             "repos/${{ github.repository }}/actions/runs/${{ steps.wb.outputs.run_id }}/rerun"
 
       # ---------- /retry: rerun failed (or one specific) job of latest run ----------
-      - name: Find latest run across pipelines
+      - name: Find latest failed PR run on this branch
         id: latest
         if: steps.cmd.outputs.name == '/retry' && steps.perm.outputs.ok == 'true'
         env:
@@ -135,22 +136,33 @@ jobs:
           BR:       ${{ steps.pr.outputs.branch }}
         run: |
           set -euo pipefail
-          # Pick the most recently created run between Wheels Build and Pipeline
-          # Tests on this branch. Pipeline Tests is workflow_run-triggered, so
-          # its head_branch is the upstream branch name — same key works.
+          # Pick the most recently created *failed* run on this branch across any
+          # workflow that is part of the PR pipeline chain.
+          # Event filter:
+          #   - pull_request       : workflows triggered directly by the PR
+          #   - workflow_run       : downstream workflows cascaded from a PR run
+          #                          (e.g. Ascend950 Pipeline Tests after Wheels Build)
+          # Conclusion filter:
+          #   rerun-failed-jobs requires a non-success conclusion.
+          # ?branch= already scopes to this branch's head; workflow_run runs
+          # inherit head_branch from their upstream, so the same key works.
           PICK=$(gh api \
-            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=20" \
+            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=50" \
             --jq '[.workflow_runs[]
-                    | select(.name=="Ascend950 Wheels Build"
-                          or .name=="Ascend950 Pipeline Tests")]
+                    | select((.event=="pull_request" or .event=="workflow_run")
+                         and (.conclusion=="failure"
+                           or .conclusion=="cancelled"
+                           or .conclusion=="timed_out"))]
                   | sort_by(.created_at) | reverse | .[0]
-                  | {id, name}')
+                  | {id, name, conclusion, event}')
           if [ -z "$PICK" ] || [ "$PICK" = "null" ]; then
-            echo "No matching run found for branch ${BR}." >&2
+            echo "No recent failed PR run found for branch ${BR}." >&2
+            echo "If you want to rebuild a successful run from scratch, comment /rebuild instead." >&2
             exit 1
           fi
-          echo "run_id=$(echo "$PICK"   | jq -r .id)"   >> "$GITHUB_OUTPUT"
-          echo "run_name=$(echo "$PICK" | jq -r .name)" >> "$GITHUB_OUTPUT"
+          echo "Picked run: $PICK"
+          echo "run_id=$(echo   "$PICK" | jq -r .id)"         >> "$GITHUB_OUTPUT"
+          echo "run_name=$(echo "$PICK" | jq -r .name)"       >> "$GITHUB_OUTPUT"
 
       - name: Rerun failed jobs (no arg)
         if: >-
