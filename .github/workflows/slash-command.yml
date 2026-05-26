@@ -130,19 +130,17 @@ jobs:
             "repos/${{ github.repository }}/actions/runs/${{ steps.wb.outputs.run_id }}/rerun"
 
       # ---------- /retry: rerun failed (or one specific) job of latest run(s) ----------
-      # For each PR-pipeline workflow on this branch, look at its LATEST run;
-      # include it for retry only if that latest is failed/cancelled/timed_out.
-      # Stale failures already superseded by a successful run are ignored.
+      # Coverage:
+      #   - PR-direct workflows (event=pull_request on PR branch).
+      #   - workflow_run cascades: GitHub assigns those runs head_branch="main"
+      #     and clears their pull_requests linkage, so we can't filter them by
+      #     branch. We fetch the downstream workflow's recent runs directly and
+      #     pair each upstream PR run with its cascade by time proximity
+      #     (cascade.created_at > upstream.updated_at, take the earliest).
       #
-      # workflow_run-triggered runs (e.g. Pipeline Tests after Wheels Build)
-      # cannot be reliably retried via rerun-failed-jobs (GitHub reuses the
-      # original workflow_run event payload and may 403). Instead, we full-rerun
-      # the *upstream* (matched by head_sha + workflow name) so the cascade
-      # refires cleanly.
-      #
-      # Add to CASCADE_MAP below when you wire up a new workflow_run cascade.
-      # Without an explicit mapping, we fall back to "any non-workflow_run run
-      # with the same head_sha".
+      # CASCADE_MAP is keyed by *workflow file path* (stable, unlike .name which
+      # reflects run-name and can be a commit subject). Add new pairs as you
+      # wire up more workflow_run cascades. Only one level supported.
       - name: Find all currently-failed PR runs on this branch
         id: latest
         if: steps.cmd.outputs.name == '/retry' && steps.perm.outputs.ok == 'true'
@@ -153,16 +151,51 @@ jobs:
           set -euo pipefail
 
           CASCADE_MAP='{
-            "Ascend950 Pipeline Tests": "Ascend950 Wheels Build"
+            ".github/workflows/Ascend950-wheels-build.yml": ".github/workflows/Ascend950-pipeline-tests.yml"
           }'
 
-          ALL=$(gh api \
-            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=100" \
-            --jq '[.workflow_runs[]
-                    | select(.event=="pull_request" or .event=="workflow_run")
-                    | {id, name, conclusion, event, head_sha, workflow_id, created_at}]')
+          RUN_FIELDS='{id, name, conclusion, event, head_sha, path, workflow_id, created_at, updated_at}'
 
-          PICKS=$(echo "$ALL" | jq '
+          # PR-direct runs on this branch (event=pull_request keeps head_branch
+          # honest; we ignore workflow_run here because their head_branch=main).
+          PR_RUNS=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=100" \
+            --jq "[.workflow_runs[] | select(.event==\"pull_request\") | ${RUN_FIELDS}]")
+
+          # For each known downstream cascade, fetch the downstream workflow's
+          # recent runs (workflow-specific endpoint, no branch filter — cascade
+          # runs all live on head_branch=main regardless of the PR's branch).
+          DOWNSTREAM_RUNS='[]'
+          while IFS= read -r ds_path; do
+            [ -n "$ds_path" ] || continue
+            ds_file=$(basename "$ds_path")
+            DS=$(gh api \
+              "repos/${{ github.repository }}/actions/workflows/${ds_file}/runs?per_page=30" \
+              --jq "[.workflow_runs[] | select(.event==\"workflow_run\") | ${RUN_FIELDS}]")
+            DOWNSTREAM_RUNS=$(jq -nc --argjson a "$DOWNSTREAM_RUNS" --argjson b "$DS" '$a + $b')
+          done < <(echo "$CASCADE_MAP" | jq -r '.[]')
+
+          # Pair each PR-direct upstream with its cascade by time proximity:
+          # earliest downstream-path run created after this upstream's update.
+          CASCADE_RUNS=$(jq -nc \
+            --argjson pr   "$PR_RUNS" \
+            --argjson ds   "$DOWNSTREAM_RUNS" \
+            --argjson cmap "$CASCADE_MAP" '
+              [ $pr[]
+                | . as $up
+                | ($cmap[.path] // null) as $ds_path
+                | select($ds_path != null)
+                | ($ds | map(select(.path == $ds_path and .created_at > $up.updated_at))
+                       | sort_by(.created_at) | .[0])
+                | select(. != null)
+                | . + {parent_run_id: $up.id, parent_path: $up.path}
+              ]')
+
+          # Combine PR-direct + cascade candidates.
+          CANDIDATES=$(jq -nc --argjson a "$PR_RUNS" --argjson b "$CASCADE_RUNS" '$a + $b')
+
+          # Group by workflow_id, take latest per workflow, filter failed-state.
+          PICKS=$(echo "$CANDIDATES" | jq '
               group_by(.workflow_id)
               | map(sort_by(.created_at) | reverse | .[0]
                     | select(.conclusion=="failure"
@@ -177,33 +210,21 @@ jobs:
           fi
 
           echo "Picked failed runs:"
-          echo "$PICKS" | jq -r '.[] | "  - \(.name) (run_id=\(.id), event=\(.event), conclusion=\(.conclusion))"'
+          echo "$PICKS" | jq -r '.[]
+            | if .parent_run_id then
+                "  - \(.name) (run_id=\(.id), event=\(.event), cascade of run=\(.parent_run_id))"
+              else
+                "  - \(.name) (run_id=\(.id), event=\(.event), conclusion=\(.conclusion))"
+              end'
 
-          # Classify each pick. workflow_run-triggered failures redirect to
-          # restarting their upstream (full rerun, cascade refires). Everything
-          # else gets a direct rerun-failed-jobs. If a pick's id is also someone
-          # else's upstream, the upstream restart supersedes the direct rerun.
-          PLAN=$(jq -n \
-            --argjson all   "$ALL" \
-            --argjson picks "$PICKS" \
-            --argjson cas   "$CASCADE_MAP" '
-              $picks | map(
-                if .event != "workflow_run" then
-                  {kind:"direct", run_id:.id, name:.name}
+          # Classify. Cascade picks (with .parent_run_id) redirect to upstream
+          # full rerun. Everything else gets direct rerun-failed-jobs.
+          PLAN=$(echo "$PICKS" | jq '
+              map(
+                if .parent_run_id then
+                  {kind:"upstream", run_id:.parent_run_id, via:.name, original_run_id:.id}
                 else
-                  ($cas[.name] // "") as $up_name
-                  | .head_sha as $sha
-                  | (if $up_name == "" then
-                       $all | map(select(.head_sha==$sha and .event!="workflow_run"))
-                     else
-                       $all | map(select(.head_sha==$sha and .name==$up_name))
-                     end
-                     | sort_by(.created_at) | reverse | .[0]) as $up
-                  | if $up then
-                      {kind:"upstream", run_id:$up.id, via:.name, original_run_id:.id}
-                    else
-                      {kind:"direct_fallback", run_id:.id, name:.name}
-                    end
+                  {kind:"direct", run_id:.id, name:.name}
                 end
               )')
 
@@ -211,13 +232,11 @@ jobs:
           echo "$PLAN" | jq -r '.[] |
             if .kind == "upstream" then
               "  > \(.via) (run=\(.original_run_id)): restart upstream run=\(.run_id)"
-            elif .kind == "direct_fallback" then
-              "  ! \(.name) (run=\(.run_id)): workflow_run with no upstream; falling back to direct"
             else
               "  - \(.name) (run=\(.run_id)): direct rerun-failed-jobs"
             end'
 
-          DIRECT_IDS=$(echo "$PLAN"   | jq -c '[.[] | select(.kind=="direct" or .kind=="direct_fallback") | .run_id]')
+          DIRECT_IDS=$(echo "$PLAN"   | jq -c '[.[] | select(.kind=="direct") | .run_id]')
           UPSTREAM_IDS=$(echo "$PLAN" | jq -c '[.[] | select(.kind=="upstream") | .run_id] | unique')
           # Upstream full rerun covers any direct id that is the same run.
           DIRECT_IDS=$(jq -nc --argjson d "$DIRECT_IDS" --argjson u "$UPSTREAM_IDS" '$d - $u')
