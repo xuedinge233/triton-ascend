@@ -1,7 +1,12 @@
 name: Ascend950 Pipeline Tests
+# Embed upstream head_sha into the display title so /retry can locate this
+# cascade run for a given PR (GitHub strips PR linkage from workflow_run runs).
 run-name: >-
   ${{
-    (github.event_name == 'workflow_run' && github.event.workflow_run.display_title)
+    (github.event_name == 'workflow_run'
+      && format('{0} · {1}',
+                github.event.workflow_run.display_title,
+                github.event.workflow_run.head_sha))
     || format('run {0}', github.run_id)
   }}
 # Orchestration after Wheels finishes:
@@ -51,7 +56,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_EVENT: ${{ github.event.workflow_run.event }}
-          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
@@ -61,10 +65,12 @@ jobs:
           # the branch/SHA directly. `head_branch` is only meaningful in the
           # branch-push case.
           if [ "${UPSTREAM_EVENT}" = "pull_request" ]; then
-            NUM=$(gh api "/repos/${{ github.repository }}/pulls?state=open&head=${HEAD_OWNER}:${HEAD_BRANCH}" \
-                    --jq 'if length > 0 then .[0].number else empty end')
+            # Look up the PR by head commit SHA — more direct than owner:branch
+            # and doesn't break if the branch gets renamed mid-PR.
+            NUM=$(gh api "/repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" \
+                    --jq "[.[] | select(.state == \"open\" and .head.sha == \"${HEAD_SHA}\")][0].number // empty")
             if [ -z "${NUM}" ]; then
-              echo "No open PR found for ${HEAD_OWNER}:${HEAD_BRANCH}; nothing to publish."
+              echo "No open PR found for commit ${HEAD_SHA}; nothing to publish."
               exit 0
             fi
             echo "num=${NUM}" >> "$GITHUB_OUTPUT"

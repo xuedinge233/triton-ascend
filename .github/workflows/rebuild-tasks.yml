@@ -151,16 +151,21 @@ jobs:
           exit $fail
 
       # ---------- /retry: rerun failed (or one specific) job of latest run(s) ----------
-      # Match by head_sha: one query returns both PR-direct (event=pull_request)
-      # and workflow_run cascades (which inherit head_sha from their upstream).
-      # When a cascade is failed, restart its upstream — rerunning a
-      # workflow_run-triggered run directly is unreliable, and the cascade
-      # re-triggers automatically once the upstream finishes.
+      # Two-source fetch:
+      #   - PR-direct (event=pull_request): matched by head_sha (precise — fork
+      #     branches sharing names with base never get mixed in).
+      #   - Cascades (event=workflow_run): GitHub strips PR linkage and rewrites
+      #     head_sha to the default branch's HEAD, so head_sha lookup can't find
+      #     them. Each downstream workflow's run-name embeds the upstream
+      #     head_sha (see Ascend950-pipeline-tests.yml), and we match cascade
+      #     runs via display_title contains <head_sha>.
       #
       # CASCADE_MAP is keyed by *workflow file path* (stable, unlike .name which
       # reflects run-name and can be a commit subject). Add new pairs as you
-      # wire up more workflow_run cascades. Only one level supported.
-      - name: Find all currently-failed runs on PR head SHA
+      # wire up more workflow_run cascades. The downstream workflow MUST embed
+      # github.event.workflow_run.head_sha in its run-name. Only one level
+      # supported.
+      - name: Find all currently-failed runs (PR head SHA + cascades)
         id: latest
         if: steps.cmd.outputs.name == '/retry' && steps.perm.outputs.ok == 'true'
         env:
@@ -177,18 +182,34 @@ jobs:
                        --json headRefOid --jq .headRefOid)
           echo "PR #${PR} head SHA: ${HEAD_SHA}"
 
-          RUN_FIELDS='{id, name, conclusion, event, path, workflow_id, created_at}'
+          RUN_FIELDS='{id, name, conclusion, event, path, workflow_id, created_at, display_title}'
 
-          # Both PR-direct and cascade runs for this commit. Cascades inherit
-          # head_sha from upstream, so a single query covers both kinds.
-          RUNS=$(gh api \
+          # PR-direct runs for this commit. head_sha is precise.
+          PR_RUNS=$(gh api \
             "repos/${{ github.repository }}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" \
-            --jq "[.workflow_runs[]
-                   | select(.event==\"pull_request\" or .event==\"workflow_run\")
-                   | ${RUN_FIELDS}]")
+            --jq "[.workflow_runs[] | select(.event==\"pull_request\") | ${RUN_FIELDS}]")
 
-          # Latest run per workflow on this SHA, keep only failed-state.
-          PICKS=$(echo "$RUNS" | jq '
+          # Cascade runs: query each downstream workflow's recent runs and
+          # filter by display_title containing the PR head_sha. The downstream
+          # workflow is responsible for embedding head_sha into its run-name.
+          CASCADE_RUNS='[]'
+          while IFS= read -r ds_path; do
+            [ -n "$ds_path" ] || continue
+            ds_file=$(basename "$ds_path")
+            DS=$(gh api \
+              "repos/${{ github.repository }}/actions/workflows/${ds_file}/runs?per_page=30" \
+              --jq "[.workflow_runs[]
+                     | select(.event==\"workflow_run\")
+                     | select(.display_title | contains(\"${HEAD_SHA}\"))
+                     | ${RUN_FIELDS}]")
+            CASCADE_RUNS=$(jq -nc --argjson a "$CASCADE_RUNS" --argjson b "$DS" '$a + $b')
+          done < <(echo "$CASCADE_MAP" | jq -r '.[]')
+
+          # Combine PR-direct + cascade candidates.
+          CANDIDATES=$(jq -nc --argjson a "$PR_RUNS" --argjson b "$CASCADE_RUNS" '$a + $b')
+
+          # Group by workflow_id, take latest per workflow, filter failed-state.
+          PICKS=$(echo "$CANDIDATES" | jq '
               group_by(.workflow_id)
               | map(sort_by(.created_at) | last
                     | select(.conclusion=="failure"
@@ -206,27 +227,28 @@ jobs:
           echo "$PICKS" | jq -r '.[]
             | "  - \(.name) (run_id=\(.id), event=\(.event), conclusion=\(.conclusion))"'
 
-          # Reverse cascade map: downstream_path -> upstream_path. For each
-          # failed cascade pick, locate its upstream in RUNS (same head_sha)
-          # and route to upstream full rerun. Non-cascade picks get
-          # rerun-failed-jobs directly.
+          # Reverse cascade map (downstream_path -> upstream_path) for routing
+          # failed cascades back to their upstream run for a full rerun.
           REV_CASCADE=$(echo "$CASCADE_MAP" | jq 'to_entries | map({key:.value, value:.key}) | from_entries')
 
+          # Classify: cascade picks → restart upstream (look up by path in PR_RUNS).
+          # Non-cascade picks → rerun-failed-jobs directly.
           PLAN=$(jq -nc \
             --argjson picks "$PICKS" \
-            --argjson runs  "$RUNS" \
+            --argjson pr    "$PR_RUNS" \
             --argjson rev   "$REV_CASCADE" '
               [ $picks[]
-                | if .event == "workflow_run" and ($rev[.path] // null) != null then
-                    ($rev[.path]) as $up_path
-                    | ($runs | map(select(.path == $up_path)) | sort_by(.created_at) | last) as $up
+                | . as $p
+                | if $p.event == "workflow_run" and ($rev[$p.path] // null) != null then
+                    ($rev[$p.path]) as $up_path
+                    | ($pr | map(select(.path == $up_path)) | sort_by(.created_at) | last) as $up
                     | if $up then
-                        {kind:"upstream", run_id:$up.id, via:.name, original_run_id:.id}
+                        {kind:"upstream", run_id:$up.id, via:$p.name, original_run_id:$p.id}
                       else
-                        {kind:"direct", run_id:.id, name:.name}
+                        {kind:"direct", run_id:$p.id, name:$p.name}
                       end
                   else
-                    {kind:"direct", run_id:.id, name:.name}
+                    {kind:"direct", run_id:$p.id, name:$p.name}
                   end
               ]')
 
