@@ -4,11 +4,13 @@ name: Slash Command
 #   /rebuild              re-run Ascend950 Wheels Build (kicks off the whole
 #                         pipeline; downstream Pipeline Tests cascades via
 #                         workflow_run)
-#   /retry                re-run only the failed jobs of the most recent failed
-#                         PR run on this branch (any workflow triggered by
-#                         pull_request or downstream workflow_run)
-#   /retry <job-name>     re-run one specific job by name in that most recent
-#                         failed run
+#   /retry                for every PR-pipeline workflow on this branch whose
+#                         latest run is currently failed/cancelled/timed_out,
+#                         rerun the failed jobs of that run. Multiple workflows
+#                         can be retried in one go.
+#   /retry <job-name>     in each picked run, rerun any job whose name matches
+#                         <job-name> exactly. Matches across multiple runs are
+#                         all retried.
 #
 # Runs in base-repo context (issue_comment), so secrets are available even for
 # fork PRs. We never check out PR head — only GitHub API calls.
@@ -127,8 +129,8 @@ jobs:
           gh api -X POST \
             "repos/${{ github.repository }}/actions/runs/${{ steps.wb.outputs.run_id }}/rerun"
 
-      # ---------- /retry: rerun failed (or one specific) job of latest run ----------
-      - name: Find latest failed PR run on this branch
+      # ---------- /retry: rerun failed (or one specific) job of latest run(s) ----------
+      - name: Find all currently-failed PR runs on this branch
         id: latest
         if: steps.cmd.outputs.name == '/retry' && steps.perm.outputs.ok == 'true'
         env:
@@ -136,69 +138,101 @@ jobs:
           BR:       ${{ steps.pr.outputs.branch }}
         run: |
           set -euo pipefail
-          # Pick the most recently created *failed* run on this branch across any
-          # workflow that is part of the PR pipeline chain.
+          # For each PR-pipeline workflow on this branch, look at its LATEST run;
+          # include it for retry only if that latest is failed/cancelled/timed_out.
+          # We never retry a stale failure that has since been superseded by a
+          # success — that's almost always not what the user wants.
+          #
           # Event filter:
           #   - pull_request       : workflows triggered directly by the PR
           #   - workflow_run       : downstream workflows cascaded from a PR run
-          #                          (e.g. Ascend950 Pipeline Tests after Wheels Build)
-          # Conclusion filter:
-          #   rerun-failed-jobs requires a non-success conclusion.
-          # ?branch= already scopes to this branch's head; workflow_run runs
-          # inherit head_branch from their upstream, so the same key works.
-          PICK=$(gh api \
-            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=50" \
+          #                          (e.g. Pipeline Tests after Wheels Build)
+          # ?branch= already scopes to this branch; workflow_run runs inherit
+          # head_branch from their upstream, so the same key works.
+          PICKS=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?branch=${BR}&per_page=100" \
             --jq '[.workflow_runs[]
-                    | select((.event=="pull_request" or .event=="workflow_run")
-                         and (.conclusion=="failure"
-                           or .conclusion=="cancelled"
-                           or .conclusion=="timed_out"))]
-                  | sort_by(.created_at) | reverse | .[0]
-                  | {id, name, conclusion, event}')
-          if [ -z "$PICK" ] || [ "$PICK" = "null" ]; then
-            echo "No recent failed PR run found for branch ${BR}." >&2
+                    | select(.event=="pull_request" or .event=="workflow_run")]
+                  | group_by(.workflow_id)
+                  | map(sort_by(.created_at) | reverse | .[0]
+                        | select(.conclusion=="failure"
+                              or .conclusion=="cancelled"
+                              or .conclusion=="timed_out")
+                        | {id, name, conclusion, workflow_id})
+                  | sort_by(.id) | reverse')
+
+          if [ "$(echo "$PICKS" | jq 'length')" = "0" ]; then
+            echo "No currently-failed PR run found for branch ${BR}." >&2
             echo "If you want to rebuild a successful run from scratch, comment /rebuild instead." >&2
             exit 1
           fi
-          echo "Picked run: $PICK"
-          echo "run_id=$(echo   "$PICK" | jq -r .id)"         >> "$GITHUB_OUTPUT"
-          echo "run_name=$(echo "$PICK" | jq -r .name)"       >> "$GITHUB_OUTPUT"
 
-      - name: Rerun failed jobs (no arg)
+          echo "Picked runs:"
+          echo "$PICKS" | jq -r '.[] | "  - \(.name) (run_id=\(.id), conclusion=\(.conclusion))"'
+
+          # Emit a compact JSON array of run ids for downstream steps.
+          RUN_IDS=$(echo "$PICKS" | jq -c '[.[].id]')
+          echo "run_ids=${RUN_IDS}" >> "$GITHUB_OUTPUT"
+
+      - name: Rerun failed jobs of every picked run (no arg)
         if: >-
           steps.cmd.outputs.name == '/retry' &&
           steps.perm.outputs.ok == 'true' &&
           steps.cmd.outputs.arg == ''
         env:
           GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          RUN_IDS:  ${{ steps.latest.outputs.run_ids }}
         run: |
-          gh api -X POST \
-            "repos/${{ github.repository }}/actions/runs/${{ steps.latest.outputs.run_id }}/rerun-failed-jobs"
+          set -euo pipefail
+          # rerun-failed-jobs each picked run. If any single call fails we still
+          # try the rest, then exit non-zero so the 😕 reaction fires.
+          fail=0
+          while read -r RUN_ID; do
+            echo "::group::rerun-failed-jobs run_id=${RUN_ID}"
+            if ! gh api -X POST \
+                "repos/${{ github.repository }}/actions/runs/${RUN_ID}/rerun-failed-jobs"; then
+              echo "Failed to rerun run ${RUN_ID}" >&2
+              fail=1
+            fi
+            echo "::endgroup::"
+          done < <(echo "$RUN_IDS" | jq -r '.[]')
+          exit $fail
 
-      - name: Rerun one named job
+      - name: Rerun one named job across picked runs
         if: >-
           steps.cmd.outputs.name == '/retry' &&
           steps.perm.outputs.ok == 'true' &&
           steps.cmd.outputs.arg != ''
         env:
           GH_TOKEN: ${{ secrets.BOT_TOKEN }}
-          RUN_ID:   ${{ steps.latest.outputs.run_id }}
+          RUN_IDS:  ${{ steps.latest.outputs.run_ids }}
           JOB_NAME: ${{ steps.cmd.outputs.arg }}
         run: |
           set -euo pipefail
-          # /jobs returns only the latest attempt's jobs by default — that is
-          # exactly what we want to act on. We match on exact job name.
-          JOB_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs?per_page=100" \
-                    --jq ".jobs[] | select(.name==\"${JOB_NAME}\") | .id" | head -n1)
-          if [ -z "$JOB_ID" ]; then
-            echo "No job named '${JOB_NAME}' in run ${RUN_ID}." >&2
+          # Scan every picked run for a job matching ${JOB_NAME} exactly, then
+          # rerun each match. /jobs returns the latest attempt by default — what
+          # the single-job rerun endpoint operates on.
+          matched=0
+          fail=0
+          while read -r RUN_ID; do
+            JOB_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                      --jq ".jobs[] | select(.name==\"${JOB_NAME}\") | .id" | head -n1)
+            [ -n "$JOB_ID" ] || continue
+            echo "::group::rerun job '${JOB_NAME}' (job_id=${JOB_ID}) in run ${RUN_ID}"
+            if ! gh api -X POST \
+                "repos/${{ github.repository }}/actions/jobs/${JOB_ID}/rerun"; then
+              echo "Failed to rerun job ${JOB_ID}" >&2
+              fail=1
+            fi
+            echo "::endgroup::"
+            matched=$((matched+1))
+          done < <(echo "$RUN_IDS" | jq -r '.[]')
+          if [ "$matched" -eq 0 ]; then
+            echo "No job named '${JOB_NAME}' found in any currently-failed run." >&2
             exit 1
           fi
-          # Note: the single-job rerun endpoint requires the job to be from the
-          # latest attempt, which it is. GitHub will rerun this job plus its
-          # dependents (per their docs).
-          gh api -X POST \
-            "repos/${{ github.repository }}/actions/jobs/${JOB_ID}/rerun"
+          echo "Retried ${matched} job(s) named '${JOB_NAME}'."
+          exit $fail
 
       - name: React 🚀 (dispatched)
         if: success() && steps.perm.outputs.ok == 'true' && steps.cmd.outputs.match == 'true'
