@@ -156,15 +156,15 @@ jobs:
       #     branches sharing names with base never get mixed in).
       #   - Cascades (event=workflow_run): GitHub strips PR linkage and rewrites
       #     head_sha to the default branch's HEAD, so head_sha lookup can't find
-      #     them. Each downstream workflow's run-name embeds the upstream
-      #     head_sha (see Ascend950-pipeline-tests.yml), and we match cascade
-      #     runs via display_title contains <head_sha>.
+      #     them. Each downstream workflow writes a commit status on the PR
+      #     head SHA at job start (context = .status_context below) with
+      #     target_url pointing to itself; we read that to recover the run id.
       #
-      # CASCADE_MAP is keyed by *workflow file path* (stable, unlike .name which
-      # reflects run-name and can be a commit subject). Add new pairs as you
-      # wire up more workflow_run cascades. The downstream workflow MUST embed
-      # github.event.workflow_run.head_sha in its run-name. Only one level
-      # supported.
+      # CASCADE_MAP is a list of triples — upstream/downstream workflow paths
+      # plus the status context the downstream workflow writes. Add an entry
+      # for every workflow_run cascade you wire up. The downstream workflow
+      # MUST write a commit status with the matching context on the upstream
+      # head_sha. Only one cascade level supported.
       - name: Find all currently-failed runs (PR head SHA + cascades)
         id: latest
         if: steps.cmd.outputs.name == '/retry' && steps.perm.outputs.ok == 'true'
@@ -174,36 +174,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          CASCADE_MAP='{
-            ".github/workflows/Ascend950-wheels-build.yml": ".github/workflows/Ascend950-pipeline-tests.yml"
-          }'
+          CASCADE_MAP='[
+            {
+              "upstream_path":   ".github/workflows/Ascend950-wheels-build.yml",
+              "downstream_path": ".github/workflows/Ascend950-pipeline-tests.yml",
+              "status_context":  "Ascend950 Pipeline Tests"
+            }
+          ]'
 
           HEAD_SHA=$(gh pr view "$PR" --repo "${{ github.repository }}" \
                        --json headRefOid --jq .headRefOid)
           echo "PR #${PR} head SHA: ${HEAD_SHA}"
 
-          RUN_FIELDS='{id, name, conclusion, event, path, workflow_id, created_at, display_title}'
+          RUN_FIELDS='{id, name, conclusion, event, path, workflow_id, created_at}'
 
           # PR-direct runs for this commit. head_sha is precise.
           PR_RUNS=$(gh api \
             "repos/${{ github.repository }}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" \
             --jq "[.workflow_runs[] | select(.event==\"pull_request\") | ${RUN_FIELDS}]")
 
-          # Cascade runs: query each downstream workflow's recent runs and
-          # filter by display_title containing the PR head_sha. The downstream
-          # workflow is responsible for embedding head_sha into its run-name.
+          # Cascade runs: read commit statuses on the PR head SHA. Each cascade
+          # writes a status with target_url=.../actions/runs/<id> early in its
+          # job, so we can recover the cascade run id without needing display
+          # title hacks. Take the latest status per context (handles reruns).
+          STATUSES=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/statuses?per_page=100")
+
           CASCADE_RUNS='[]'
-          while IFS= read -r ds_path; do
-            [ -n "$ds_path" ] || continue
-            ds_file=$(basename "$ds_path")
-            DS=$(gh api \
-              "repos/${{ github.repository }}/actions/workflows/${ds_file}/runs?per_page=30" \
-              --jq "[.workflow_runs[]
-                     | select(.event==\"workflow_run\")
-                     | select(.display_title | contains(\"${HEAD_SHA}\"))
-                     | ${RUN_FIELDS}]")
-            CASCADE_RUNS=$(jq -nc --argjson a "$CASCADE_RUNS" --argjson b "$DS" '$a + $b')
-          done < <(echo "$CASCADE_MAP" | jq -r '.[]')
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            CTX=$(echo "$entry" | jq -r '.status_context')
+            TARGET_URL=$(echo "$STATUSES" | jq -r --arg c "$CTX" \
+              '[.[] | select(.context == $c)] | sort_by(.updated_at) | last | .target_url // ""')
+            [ -n "$TARGET_URL" ] && [ "$TARGET_URL" != "null" ] || continue
+            RUN_ID=$(echo "$TARGET_URL" | grep -oE '/runs/[0-9]+' | grep -oE '[0-9]+' | head -1)
+            [ -n "$RUN_ID" ] || continue
+            RUN=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}" \
+                    --jq "${RUN_FIELDS}")
+            CASCADE_RUNS=$(jq -nc --argjson a "$CASCADE_RUNS" --argjson b "$RUN" '$a + [$b]')
+          done < <(echo "$CASCADE_MAP" | jq -c '.[]')
 
           # Combine PR-direct + cascade candidates.
           CANDIDATES=$(jq -nc --argjson a "$PR_RUNS" --argjson b "$CASCADE_RUNS" '$a + $b')
@@ -229,7 +237,7 @@ jobs:
 
           # Reverse cascade map (downstream_path -> upstream_path) for routing
           # failed cascades back to their upstream run for a full rerun.
-          REV_CASCADE=$(echo "$CASCADE_MAP" | jq 'to_entries | map({key:.value, value:.key}) | from_entries')
+          REV_CASCADE=$(echo "$CASCADE_MAP" | jq 'map({key:.downstream_path, value:.upstream_path}) | from_entries')
 
           # Classify: cascade picks → restart upstream (look up by path in PR_RUNS).
           # Non-cascade picks → rerun-failed-jobs directly.
