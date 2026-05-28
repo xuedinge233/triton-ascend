@@ -38,6 +38,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
+      statuses: write
     outputs:
       pr_num: ${{ steps.pr.outputs.num }}
       kind: ${{ steps.pr.outputs.kind }}
@@ -45,6 +46,23 @@ jobs:
       wheel_name: ${{ steps.wheel.outputs.name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Mark cascade run on PR head SHA
+        # Writes a pending commit status on the upstream's head SHA so /retry
+        # can locate this cascade run for a given PR (GitHub strips PR linkage
+        # from workflow_run runs; statuses persist on the head commit and
+        # survive the rewrite). The finalize job overwrites this same context
+        # with the terminal state later.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA:      ${{ github.event.workflow_run.head_sha }}
+          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
+            -f state=pending \
+            -f context='Ascend950 Pipeline Tests' \
+            -f description='Pipeline starting' \
+            -f target_url="$TARGET"
 
       - name: Resolve publish identifier
         id: pr
@@ -131,7 +149,11 @@ jobs:
       image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
     permissions:
       pull-requests: write
-      statuses: write
+    outputs:
+      # Surface BY pipeline outcome so the finalize job can write a meaningful
+      # commit status description without re-reading the by-status file.
+      by_status: ${{ steps.final.outputs.status }}
+      by_msg:    ${{ steps.final.outputs.msg }}
     steps:
       # Default checkout pulls the base repo at the workflow's ref (safe).
       # Do not pass ref: head_sha — that would execute fork code.
@@ -175,19 +197,6 @@ jobs:
             printf '%s\n' "$PR_TITLE"
             echo "__EOF__"
           } >> "$GITHUB_ENV"
-
-      - name: Set commit status (pending)
-        if: steps.ctx.outputs.head_sha != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA:      ${{ steps.ctx.outputs.head_sha }}
-          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
-            -f state=pending \
-            -f context='Ascend950 Pipeline Tests' \
-            -f description='Pipeline running' \
-            -f target_url="$TARGET"
 
       - name: Trigger pipeline
         id: run
@@ -349,21 +358,6 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set commit status (final)
-        if: always() && steps.ctx.outputs.head_sha != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA:      ${{ steps.ctx.outputs.head_sha }}
-          STATE:    ${{ steps.run.outcome == 'success' && 'success' || 'failure' }}
-          DESC:     ${{ steps.final.outputs.status }}
-          TARGET:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
-            -f state="$STATE" \
-            -f context='Ascend950 Pipeline Tests' \
-            -f description="${DESC:-UNKNOWN}" \
-            -f target_url="$TARGET"
-
       - name: Remove PR wheels from OBS
         if: always() && steps.ctx.outputs.pr_id != ''
         shell: bash
@@ -388,3 +382,46 @@ jobs:
           mv obsutil_linux_* obsutil
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
           obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
+
+  # Single source of truth for the final commit status. Runs always() so that
+  # publish-side failures and cancellations don't leave the marker pending
+  # forever. Only runs on the workflow_run cascade path — workflow_dispatch
+  # is a manual operator action and doesn't need a PR-visible status.
+  finalize:
+    needs: [publish, trigger]
+    if: >-
+      always()
+      && github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Write final commit status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA:             ${{ github.event.workflow_run.head_sha }}
+          TARGET:          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUBLISH_RESULT:  ${{ needs.publish.result }}
+          TRIGGER_RESULT:  ${{ needs.trigger.result }}
+          BY_STATUS:       ${{ needs.trigger.outputs.by_status }}
+          BY_MSG:          ${{ needs.trigger.outputs.by_msg }}
+        run: |
+          set -euo pipefail
+          # Map (publish, trigger) job results → commit status state + desc.
+          # GitHub status API truncates description at 140 chars on its own.
+          if [ "$PUBLISH_RESULT" != "success" ]; then
+            STATE=failure
+            DESC="Publish ${PUBLISH_RESULT}"
+          elif [ "$TRIGGER_RESULT" != "success" ]; then
+            STATE=failure
+            DESC="${BY_STATUS:-Trigger ${TRIGGER_RESULT}}${BY_MSG:+: ${BY_MSG}}"
+          else
+            STATE=success
+            DESC="${BY_STATUS:-OK}"
+          fi
+          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
+            -f state="$STATE" \
+            -f context='Ascend950 Pipeline Tests' \
+            -f description="$DESC" \
+            -f target_url="$TARGET"
