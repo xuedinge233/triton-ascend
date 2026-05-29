@@ -133,11 +133,15 @@ jobs:
         run: |
           source /usr/local/Ascend/cann/set_env.sh
           export PATH="/usr/local/bisheng/tools/bishengir/bin:$PATH"
-          TEST_MLIR_DIR=$(ls -d build/cmake.*/third_party/ascend/unittest/Conversion/General/DynamicCVPipeline 2>/dev/null | head -1 || true)
-          echo "TEST_MLIR_DIR=${TEST_MLIR_DIR:-<not found>}"
-          if [ -z "${TEST_MLIR_DIR}" ] || [ ! -d "${TEST_MLIR_DIR}" ]; then
-            echo "MLIR test directory not found."
-            echo "Expected to match: build/cmake.*/third_party/ascend/unittest/Conversion/General/DynamicCVPipeline"
+          # CMake only drops lit.site.cfg.py into the build dir; the .mlir test files
+          # themselves stay in the source tree (lit.cfg.py points test_source_root back
+          # at <source>/third_party/ascend/unittest). So we must aim lit at the build-dir
+          # site cfg to get substitutions, then filter down to the DynamicCVPipeline suite.
+          BUILD_UT_DIR=$(ls -d build/cmake.*/third_party/ascend/unittest 2>/dev/null | head -1 || true)
+          echo "BUILD_UT_DIR=${BUILD_UT_DIR:-<not found>}"
+          if [ -z "${BUILD_UT_DIR}" ] || [ ! -f "${BUILD_UT_DIR}/lit.site.cfg.py" ]; then
+            echo "lit.site.cfg.py not found — TRITON_BUILD_UT may not have taken effect."
+            echo "Expected: build/cmake.*/third_party/ascend/unittest/lit.site.cfg.py"
             exit 1
           fi
-          lit -v "${TEST_MLIR_DIR}"
+          lit -v "${BUILD_UT_DIR}" --filter 'Conversion/General/DynamicCVPipeline'
