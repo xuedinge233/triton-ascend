@@ -1,22 +1,16 @@
 # Read the Docs configuration file
 # See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+#
+# Single config drives both language projects. Each RTD project sets
+# DOCS_LANG (in Admin -> Environment Variables) to "zh" or "en"; defaults
+# to "zh" so the existing main project keeps working without extra setup.
 
-# Required
 version: 2
 
-# Set the OS, Python version, and other tools you might need
 build:
   os: ubuntu-24.04
   tools:
     python: "3.13"
-
-# Build documentation in the "docs/" directory with Sphinx
-sphinx:
-   configuration: docs/zh/conf.py
-
-# Optionally, but recommended,
-# declare the Python requirements required to build your documentation
-# See https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
-python:
-   install:
-   - requirements: docs/zh/requirement.txt
+  commands:
+    - pip install -r "docs/${DOCS_LANG:-zh}/requirement.txt"
+    - python -m sphinx -b html "docs/${DOCS_LANG:-zh}" "$READTHEDOCS_OUTPUT/html"
