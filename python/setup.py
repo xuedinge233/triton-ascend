@@ -845,34 +845,8 @@ def get_package_name():
     return os.environ.get("TRITON_WHEEL_NAME", "triton_ascend")
 
 
-ARCHITECTURE_ALIASES = {
-    "x86_64": "x86_64",
-    "amd64": "x86_64",
-    "i386": "x86_64",
-    "i686": "x86_64",
-    "arm64": "arm",
-    "aarch64": "arm",
-    "armv7l": "arm",
-    "armv8l": "arm",
-    "arm": "arm",
-}
-
-ARCHITECTURE_DEPENDENCIES = {
-    "x86_64": ["triton==3.2.0"],
-    "arm": ["triton==3.5.0"],
-}
-
-
-def get_architecture():
-    arch = platform.machine().lower()
-    try:
-        return ARCHITECTURE_ALIASES[arch]
-    except KeyError as exc:
-        raise RuntimeError(f"Unsupported CPU architecture: {arch}") from exc
-
-
 def get_install_requirements():
-    install_requires = [
+    return [
         "attrs==24.2.0",
         "numpy==1.26.4",
         "scipy==1.13.1;python_version<'3.13'",
@@ -885,8 +859,6 @@ def get_install_requirements():
         "pybind11",
         "pandas",
     ]
-    arch = get_architecture()
-    return [*install_requires, *ARCHITECTURE_DEPENDENCIES[arch]]
 
 
 is_manylinux = check_env_flag("IS_MANYLINUX", "FALSE")
