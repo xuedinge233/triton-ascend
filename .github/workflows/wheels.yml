@@ -64,7 +64,6 @@ jobs:
             wheels-${{ matrix.config.arch }}-${{ matrix.python }}-
 
       - name: Build wheels
-        if: github.event_name != 'pull_request' || matrix.branch.ref == github.base_ref
         run: |
           python --version
           # Make sure cibuildwheel is updated to latest, this will enable latest python builds
@@ -115,7 +114,6 @@ jobs:
           python3 -m cibuildwheel "${{ matrix.branch.path }}" --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request' || matrix.branch.ref == github.base_ref
         with:
           name: cibw-wheels-manylinux_2_28_${{ matrix.config.arch }}-${{ matrix.python }}-${{ matrix.branch.tag }}-wheels-upload
           path: ./wheelhouse/*.whl
