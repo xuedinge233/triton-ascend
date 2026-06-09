@@ -8,9 +8,19 @@ on:
         type: string
 
 jobs:
-  integration-tests-ascend:
-    name: integration-tests-ascend (${{ matrix.config.name }}, py${{ matrix.python_version }})
-    runs-on: ${{ matrix.config.runs_on }}
+  # ---------------------------------------------------------------------------
+  # Build the triton-ascend wheel on a CPU runner. Building does not need NPU
+  # hardware, only the CANN toolkit + Bisheng compiler (both present in the
+  # container image). The runner MUST be aarch64 so the produced wheel/binaries
+  # are loadable on the aarch64 NPU runner in the next job.
+  #
+  # MLIR FileCheck tests are pure CPU compile-checks (lit/FileCheck over .mlir),
+  # so they run here next to the fresh build/ directory — that way only the
+  # wheel needs to be shipped to the NPU job, not the whole build tree.
+  # ---------------------------------------------------------------------------
+  build-ascend:
+    name: build-ascend (${{ matrix.config.name }}, py${{ matrix.python_version }})
+    runs-on: linux-aarch64-cpu-16
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:${{ matrix.cann_version }}-${{ matrix.config.chip_type }}-${{ matrix.os }}-py${{ matrix.python_version }}-latest
     timeout-minutes: 300
@@ -22,14 +32,11 @@ jobs:
         python_version: ["3.10", "3.11"]
       fail-fast: false
     env:
-      PROTON_SKIP_PC_SAMPLING_TEST: 1
       PYTHON: "python${{ matrix.python_version }}"
-      UV_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
-      UV_EXTRA_INDEX_URL: "https://repo.huaweicloud.com/ascend/repos/pypi"
-      UV_INSECURE_HOST: "cache-service.nginx-pypi-cache.svc.cluster.local"
-      UV_HTTP_TIMEOUT: 120
-      UV_NO_CACHE: 1
-      UV_SYSTEM_PYTHON: 1
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      PIP_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
+      PIP_TRUSTED_HOST: "cache-service.nginx-pypi-cache.svc.cluster.local"
+      PIP_EXTRA_INDEX_URL: "https://repo.huaweicloud.com/ascend/repos/pypi"
 
     steps:
       - name: Checkout
@@ -47,7 +54,7 @@ jobs:
             ~/.triton/llvm
             ~/.triton/json
             ~/.triton/nvidia
-            ~/.ccache
+            ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-${{ runner.arch }}-cann${{ matrix.cann_version }}-${{ matrix.os }}-${{ matrix.config.chip_type }}-py${{ matrix.python_version }}-triton-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/llvm_patch/*.patch') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann${{ matrix.cann_version }}-${{ matrix.os }}-${{ matrix.config.chip_type }}-py${{ matrix.python_version }}-triton-
 
@@ -97,34 +104,43 @@ jobs:
           nproc
           source /usr/local/Ascend/cann/set_env.sh
           export PATH="/usr/local/bisheng/tools/bishengir/bin:$PATH"
-          npu-smi info
           if [ -n "${ASCEND_TOOLKIT_HOME}" ] && [ -f "${ASCEND_TOOLKIT_HOME}/cann/version.info" ]; then
             cat "${ASCEND_TOOLKIT_HOME}/cann/version.info"
           fi
 
+          mkdir -p "$CCACHE_DIR"
           ccache --zero-stats
+          # Cap build parallelism by BOTH cpu count and memory. Each clang job
+          # compiling an LLVM/MLIR TU peaks at ~3 GB. NOTE: `free` reports the
+          # HOST's RAM (2 TiB here), not the cgroup limit the OOM killer actually
+          # enforces, so read the cgroup memory limit directly; fall back to
+          # `free` only when no limit is set.
+          MEM_BYTES=""
+          if [ -f /sys/fs/cgroup/memory.max ]; then                       # cgroup v2
+            V=$(cat /sys/fs/cgroup/memory.max)
+            [ "$V" != "max" ] && MEM_BYTES=$V
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then   # cgroup v1
+            V=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+            # v1 uses a huge sentinel to mean "unlimited"
+            [ "$V" -lt 1000000000000000 ] && MEM_BYTES=$V
+          fi
+          if [ -n "$MEM_BYTES" ]; then
+            MEM_GB=$(( MEM_BYTES / 1024 / 1024 / 1024 ))
+          else
+            MEM_GB=$(free -g | awk '/^Mem:/{print $2}')
+          fi
+          echo "Effective memory budget: ${MEM_GB} GB"
           NUM_PROCS=$(( $(nproc) / 3 ))
+          MEM_LIMIT=$(( MEM_GB / 3 ))
+          if [ "$MEM_LIMIT" -lt "$NUM_PROCS" ]; then NUM_PROCS=$MEM_LIMIT; fi
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
+          echo "Building with MAX_JOBS=$NUM_PROCS"
           MAX_JOBS="$NUM_PROCS" \
           ${PYTHON} setup.py bdist_wheel
-          ${PYTHON} -m pip install uv
-          uv pip install --python "${PYTHON}" dist/*.whl --no-deps
+          ${PYTHON} -m pip install dist/*.whl
 
       - name: CCache stats
         run: ccache --print-stats
-
-      - name: Run unit tests on NPU
-        shell: bash
-        run: |
-          source /usr/local/Ascend/cann/set_env.sh
-          export PATH="/usr/local/bisheng/tools/bishengir/bin:$PATH"
-          NUM_PROCS=$(( $(nproc) / 9 ))
-          if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
-          ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/pytest_ut
-          ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/autotune_ut
-          # NOTE: kernel tests are temporarily disabled due to intermittent failures
-          # that cause CI instability. TODO: Fix flaky kernel tests and re-enable.
-          # ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/kernels/test_triton_kernel.py
 
       - name: Run MLIR FileCheck tests
         shell: bash
@@ -147,3 +163,101 @@ jobs:
             fi
             exit 1
           fi
+
+      - name: Upload triton-ascend wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: triton-ascend-wheel-${{ matrix.config.chip_type }}-${{ matrix.os }}-cann${{ matrix.cann_version }}-py${{ matrix.python_version }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Install the pre-built wheel on the NPU runner and run the NPU unit tests.
+  # This job touches NPU hardware only — no compilation.
+  # ---------------------------------------------------------------------------
+  integration-tests-ascend:
+    needs: build-ascend
+    name: integration-tests-ascend (${{ matrix.config.name }}, py${{ matrix.python_version }})
+    runs-on: ${{ matrix.config.runs_on }}
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:${{ matrix.cann_version }}-${{ matrix.config.chip_type }}-${{ matrix.os }}-py${{ matrix.python_version }}-latest
+    timeout-minutes: 300
+    strategy:
+      matrix:
+        config: ${{ fromJson(inputs.matrix) }}
+        cann_version: ["8.5.0"]
+        os: [ubuntu22.04]
+        python_version: ["3.10", "3.11"]
+      fail-fast: false
+    env:
+      PROTON_SKIP_PC_SAMPLING_TEST: 1
+      PYTHON: "python${{ matrix.python_version }}"
+      PIP_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
+      PIP_TRUSTED_HOST: "cache-service.nginx-pypi-cache.svc.cluster.local"
+      PIP_EXTRA_INDEX_URL: "https://repo.huaweicloud.com/ascend/repos/pypi"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: "true"
+
+      - name: Add git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download and install Bisheng compiler
+        shell: bash
+        run: |
+          if [ ! -f cmake/bisheng-version.txt ]; then
+            echo "cmake/bisheng-version.txt not found, skipping"
+            exit 0
+          fi
+
+          OBS_BASE="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com"
+          BISHENG_FILENAME=$(sed -n '1p' cmake/bisheng-version.txt | xargs)
+          BISHENG_SHA256=$(sed -n '2p' cmake/bisheng-version.txt | sed 's/^sha256://' | xargs)
+
+          if [ -z "${BISHENG_FILENAME}" ]; then
+            echo "Error: cmake/bisheng-version.txt must contain a Bisheng filename on the first line." >&2
+            exit 1
+          fi
+
+          echo "Downloading: ${BISHENG_FILENAME}"
+          curl -fL "${OBS_BASE}/cann/${BISHENG_FILENAME}" -o bisheng.run
+
+          if [ -n "${BISHENG_SHA256}" ]; then
+            echo "Verifying SHA256 checksum..."
+            echo "${BISHENG_SHA256}  bisheng.run" | sha256sum -c -
+          else
+            echo "Warning: No SHA256 checksum provided, skipping verification"
+          fi
+
+          chmod +x bisheng.run
+          ./bisheng.run --quiet --install --install-path=/usr/local/bisheng
+          echo "/usr/local/bisheng/tools/bishengir/bin" >> $GITHUB_PATH
+
+      - name: Download triton-ascend wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: triton-ascend-wheel-${{ matrix.config.chip_type }}-${{ matrix.os }}-cann${{ matrix.cann_version }}-py${{ matrix.python_version }}
+          path: dist
+
+      - name: Install triton-ascend
+        shell: bash
+        run: |
+          ${PYTHON} -m pip install dist/*.whl
+
+      - name: Run unit tests on NPU
+        shell: bash
+        run: |
+          source /usr/local/Ascend/cann/set_env.sh
+          export PATH="/usr/local/bisheng/tools/bishengir/bin:$PATH"
+          npu-smi info
+          NUM_PROCS=$(( $(nproc) / 9 ))
+          if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
+          ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/pytest_ut
+          ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/autotune_ut
+          # NOTE: kernel tests are temporarily disabled due to intermittent failures
+          # that cause CI instability. TODO: Fix flaky kernel tests and re-enable.
+          # ${PYTHON} -m pytest -s -v -n "$NUM_PROCS" --dist=loadfile third_party/ascend/unittest/kernels/test_triton_kernel.py
