@@ -110,8 +110,31 @@ jobs:
 
           mkdir -p "$CCACHE_DIR"
           ccache --zero-stats
+          # Cap build parallelism by BOTH cpu count and memory. Each clang job
+          # compiling an LLVM/MLIR TU peaks at ~3 GB. NOTE: `free` reports the
+          # HOST's RAM (2 TiB here), not the cgroup limit the OOM killer actually
+          # enforces, so read the cgroup memory limit directly; fall back to
+          # `free` only when no limit is set.
+          MEM_BYTES=""
+          if [ -f /sys/fs/cgroup/memory.max ]; then                       # cgroup v2
+            V=$(cat /sys/fs/cgroup/memory.max)
+            [ "$V" != "max" ] && MEM_BYTES=$V
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then   # cgroup v1
+            V=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+            # v1 uses a huge sentinel to mean "unlimited"
+            [ "$V" -lt 1000000000000000 ] && MEM_BYTES=$V
+          fi
+          if [ -n "$MEM_BYTES" ]; then
+            MEM_GB=$(( MEM_BYTES / 1024 / 1024 / 1024 ))
+          else
+            MEM_GB=$(free -g | awk '/^Mem:/{print $2}')
+          fi
+          echo "Effective memory budget: ${MEM_GB} GB"
           NUM_PROCS=$(( $(nproc) / 3 ))
+          MEM_LIMIT=$(( MEM_GB / 3 ))
+          if [ "$MEM_LIMIT" -lt "$NUM_PROCS" ]; then NUM_PROCS=$MEM_LIMIT; fi
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
+          echo "Building with MAX_JOBS=$NUM_PROCS"
           MAX_JOBS="$NUM_PROCS" \
           ${PYTHON} setup.py bdist_wheel
           ${PYTHON} -m pip install dist/*.whl
