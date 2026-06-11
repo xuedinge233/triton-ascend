@@ -138,4 +138,15 @@ jobs:
           mv obsutil_linux_* obsutil
 
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-north-4.myhuaweicloud.com
-          obsutil/obsutil cp -u wheelhouse/*.whl "obs://ascend-artifcat-packages/pypi/packages/ascend/repos/pypi/nightly/triton-ascend/"
+          OBS_DIR="obs://ascend-artifcat-packages/pypi/packages/ascend/repos/pypi/nightly/triton-ascend/"
+          obsutil/obsutil cp -u wheelhouse/*.whl "${OBS_DIR}"
+
+          # Regenerate index.html from every .whl currently in the directory
+          # (non-recursive, short format), keeping only the basenames.
+          obsutil/obsutil ls "${OBS_DIR}" -d -s -limit=0 \
+            | grep -oE '[^/]+\.whl$' \
+            | sort -u > files.txt
+          while IFS= read -r f; do
+            printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
+          done < files.txt > index.html
+          obsutil/obsutil cp index.html "${OBS_DIR}"
