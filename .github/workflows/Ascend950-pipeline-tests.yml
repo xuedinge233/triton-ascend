@@ -221,6 +221,15 @@ jobs:
           BRI="pr-${PR_ID}-${TS}"
           BTI="task-${PR_ID}-${TS}"
 
+          # Persist the blue identifiers to a FILE so the always() cancel step
+          # can reach them even when THIS step is cancelled mid-poll (manual
+          # cancel or job timeout). $GITHUB_ENV does NOT work here: the runner
+          # only applies it after a step finishes cleanly, so a cancelled step
+          # never exports its vars. A file write lands on disk immediately.
+          # Written before /start so a cancellation during the start retries is
+          # still recoverable.
+          printf 'BY_BRI=%s\nBY_BTI=%s\n' "$BRI" "$BTI" > "${RUNNER_TEMP}/by-ids"
+
           write_status(){
             # $3 (yellowPipelineUrl) only populated on terminal SUCCESS; blank otherwise.
             printf 'status=%s\nmsg=%s\nblueRecordId=%s\nyellowPipelineUrl=%s\n' \
@@ -334,6 +343,99 @@ jobs:
           fi
           echo "terminal status: ${ST} - ${MSG}"
           [ "$ST" = "SUCCESS" ] || exit 1
+
+      - name: Cancel yellow pipeline if still running
+        # Runs on success, failure AND cancellation (manual cancel or job
+        # timeout) — always() is the only condition that survives a cancelled
+        # job. The internal terminal-status guard makes the success path a
+        # no-op, so the only real work happens when the job ends while the
+        # yellow pipeline is still in flight.
+        if: always() && steps.ctx.outputs.pr_id != ''
+        shell: bash
+        env:
+          BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
+          APP_CODE:           ${{ secrets.BLUE_YELLOW_APP_CODE }}
+          APP_KEY:            ${{ secrets.BLUE_YELLOW_APP_KEY }}
+          APP_SECRET:         ${{ secrets.BLUE_YELLOW_APP_SECRET }}
+          YELLOW_PIPELINE_ID: ${{ vars.YELLOW_PIPELINE_ID }}
+          YELLOW_GROUP_ID:    ${{ vars.YELLOW_GROUP_ID }}
+          STATUS_FILE:        ${{ runner.temp }}/by-status
+          IDS_FILE:           ${{ runner.temp }}/by-ids
+        run: |
+          # Best-effort cleanup: never let a stop failure mask the real job
+          # result, so no `set -e`.
+          set -uo pipefail
+
+          # Recover the blue identifiers the Trigger pipeline step wrote to disk
+          # (it cannot use $GITHUB_ENV — that is lost when the step is cancelled).
+          BY_BRI=""; BY_BTI=""
+          if [ -f "$IDS_FILE" ]; then
+            BY_BRI=$(grep '^BY_BRI=' "$IDS_FILE" | head -1 | cut -d= -f2- || true)
+            BY_BTI=$(grep '^BY_BTI=' "$IDS_FILE" | head -1 | cut -d= -f2- || true)
+          fi
+
+          # /start never ran (no blue identifiers recorded) → nothing to cancel.
+          if [ -z "${BY_BRI:-}" ] || [ -z "${BY_BTI:-}" ]; then
+            echo "No blueRecordId/blueRecordTaskId recorded; nothing to cancel."
+            exit 0
+          fi
+
+          # Skip if the yellow pipeline already reached a terminal state — it
+          # has stopped on its own (this covers the success path under always()
+          # and any failure the poll loop already observed).
+          LAST_STATUS=""
+          if [ -f "$STATUS_FILE" ]; then
+            LAST_STATUS=$(grep '^status=' "$STATUS_FILE" | head -1 | cut -d= -f2- || true)
+          fi
+          case "${LAST_STATUS}" in
+            SUCCESS|FAILURE|MQS_SEND_FAILURE|UNAUTHORIZED|START_FAILURE|TIMEOUT|ABORT)
+              echo "Yellow pipeline already terminal (${LAST_STATUS}); no cancel needed."
+              exit 0;;
+          esac
+
+          echo "Job ending without terminal status (last=${LAST_STATUS:-none}); cancelling yellow pipeline."
+
+          H_CODE="X-Apig-AppCode: ${APP_CODE}"
+          H_KEY="AppKey: ${APP_KEY}"
+          H_SEC="AppSecret: ${APP_SECRET}"
+          H_JSON="Content-Type: application/json"
+
+          # Reverse-lookup yellowRecordId from the blue task id (same path stop.sh uses).
+          QUERY_BODY=$(printf '{"blueRecordId":"%s","blueRecordTaskId":"%s"}' "$BY_BRI" "$BY_BTI")
+          QR=$(curl -sS --max-time 30 --retry 2 --retry-all-errors --retry-delay 3 \
+            -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+            -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
+          echo "query response: ${QR}"
+          YRI=$(printf '%s' "$QR" | grep -o '"yellowRecordId":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+
+          if [ -z "$YRI" ] || [ "$YRI" = "null" ]; then
+            echo "No yellowRecordId resolved; yellow pipeline likely never started — nothing to cancel."
+            exit 0
+          fi
+
+          TS=$(date +%Y%m%d%H%M%S)
+          STOP_BODY=$(cat <<EOF
+          {
+            "bluePipelineId": "null",
+            "blueRecordId": "${BY_BRI}",
+            "blueRecordTaskId": "stop-${BY_BTI}-${TS}",
+            "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
+            "yellowGroupId": "${YELLOW_GROUP_ID}",
+            "starter": "z00856207",
+            "actionType": "stop",
+            "yellowRecordId": "${YRI}"
+          }
+          EOF
+          )
+          R=$(curl -sS --max-time 30 \
+            -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+            -X POST "${BASE_URL}/start" -d "${STOP_BODY}" || true)
+          echo "stop response: ${R}"
+          if echo "$R" | grep -q '"code":200'; then
+            echo "Yellow pipeline cancel request accepted (yellowRecordId=${YRI})."
+          else
+            echo "Yellow pipeline cancel request may have failed; continuing cleanup."
+          fi
 
       - name: Read final status
         if: always() && steps.ctx.outputs.pr_id != ''
