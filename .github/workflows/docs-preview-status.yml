@@ -1,0 +1,118 @@
+name: Docs preview status
+
+# Mirrors the RTD PR build state onto a GitHub commit status, so contributors
+# see the docs preview link in the PR checks list without needing the RTD
+# GitHub App installed.
+#
+# Requires repo secret: RTD_TOKEN (RTD account -> API tokens).
+#
+# Runs via pull_request_target so secrets are available and statuses can be
+# written. We never check out PR code — only read PR metadata and query the
+# RTD API — so this is safe for fork PRs.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  statuses: write
+  pull-requests: read
+
+concurrency:
+  group: docs-preview-status-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    env:
+      RTD_PROJECT: triton-ascend-docs-cn
+      MAX_WAIT_MIN: '20'
+      POLL_INTERVAL_SEC: '30'
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RTD_TOKEN: ${{ secrets.RTD_TOKEN }}
+        with:
+          script: |
+            const project    = process.env.RTD_PROJECT;
+            const token      = process.env.RTD_TOKEN;
+            const maxWaitMin = parseInt(process.env.MAX_WAIT_MIN, 10);
+            const pollSec    = parseInt(process.env.POLL_INTERVAL_SEC, 10);
+
+            const pr  = context.payload.pull_request.number;
+            const sha = context.payload.pull_request.head.sha;
+            const ctx = 'docs/readthedocs';
+            const previewUrl = `https://${project}--${pr}.readthedocs.build/`;
+
+            async function setStatus(state, description) {
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                sha,
+                state,
+                target_url: previewUrl,
+                description: description.slice(0, 140),
+                context: ctx,
+              });
+            }
+
+            // Initial pending state so the check shows up immediately.
+            await setStatus('pending', 'Waiting for Read the Docs build...');
+
+            if (!token) {
+              await setStatus('error', 'RTD_TOKEN secret not configured');
+              core.setFailed('RTD_TOKEN secret is not set on this repo.');
+              return;
+            }
+
+            const apiUrl = `https://app.readthedocs.org/api/v3/projects/${project}/versions/${pr}/`;
+            const deadline = Date.now() + maxWaitMin * 60 * 1000;
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+            let lastReportedState = 'pending';
+
+            while (Date.now() < deadline) {
+              let resp;
+              try {
+                resp = await fetch(apiUrl, {
+                  headers: { Authorization: `Token ${token}` },
+                });
+              } catch (e) {
+                core.info(`Fetch failed: ${e.message}; retrying.`);
+                await sleep(pollSec * 1000);
+                continue;
+              }
+
+              if (resp.status === 404) {
+                // RTD hasn't received the PR webhook yet — keep waiting.
+                await sleep(pollSec * 1000);
+                continue;
+              }
+              if (!resp.ok) {
+                core.warning(`RTD API ${resp.status}: ${await resp.text()}`);
+                await sleep(pollSec * 1000);
+                continue;
+              }
+
+              const data = await resp.json();
+              const build = data.last_build || {};
+              const state = build.state || 'unknown';
+
+              if (state === 'finished') {
+                if (build.success) {
+                  await setStatus('success', 'Preview built successfully');
+                } else {
+                  await setStatus('failure', 'Read the Docs build failed');
+                }
+                return;
+              }
+
+              if (state !== lastReportedState) {
+                await setStatus('pending', `RTD build: ${state}`);
+                lastReportedState = state;
+              }
+              await sleep(pollSec * 1000);
+            }
+
+            await setStatus('failure', `Build did not finish in ${maxWaitMin} min`);
