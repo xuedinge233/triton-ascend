@@ -17,6 +17,20 @@ on:
   workflow_run:
     workflows: ["Ascend950 Wheels Build"]
     types: [completed]
+  # Manual entry point for testing the blue/yellow API directly from the
+  # runner (reachability + start/query/stop), without waiting for the Wheels
+  # cascade. Drives the dedicated `dispatch_test` job only.
+  workflow_dispatch:
+    inputs:
+      pr_id:
+        description: "Test id used in blueRecordId / obs_url (any string)"
+        required: false
+        default: "0"
+      run_stop:
+        description: "Also exercise the stop/cancel call after start"
+        type: boolean
+        required: false
+        default: true
 
 concurrency:
   # cancel-in-progress is false because /start is non-idempotent (a cancelled
@@ -217,6 +231,16 @@ jobs:
           H_SEC="AppSecret: ${APP_SECRET}"
           H_JSON="Content-Type: application/json"
 
+          # The runner's /etc/hosts hijacks the public APIG domain to an
+          # in-cluster kube-apiserver (10.0.1.x:8443), which 403s us. Pin the
+          # real public EIP so curl reaches the actual API gateway. The domain
+          # (and thus SNI / cert validation) is unchanged, so no -k is needed.
+          # NOTE: hard-coded EIP — update if the APIG instance's EIP changes;
+          # the proper long-term fix is to correct the runner DNS.
+          APIG_EIP="116.63.184.66"
+          APIG_HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#[:/].*##')
+          RESOLVE="--resolve ${APIG_HOST}:443:${APIG_EIP}"
+
           TS=$(date +%Y%m%d%H%M%S)
           BRI="pr-${PR_ID}-${TS}"
           BTI="task-${PR_ID}-${TS}"
@@ -277,7 +301,7 @@ jobs:
           LAST_R=""; LAST_BODY=""
           DUP_RE='(exist|duplicate|already)'
           for ((I=1; I<=5; I++)); do
-            R=$(curl -sS --max-time 70 \
+            R=$(curl -sS $RESOLVE --max-time 70 \
               -o /tmp/by_start.body -w '%{http_code}' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/start" -d "${START_BODY}" || echo "000")
@@ -320,7 +344,7 @@ jobs:
           ST=""; MSG=""; DONE=false
           for ((N=1; N<=720; N++)); do
             sleep 60
-            QHTTP=$(curl -sS --retry 3 --retry-all-errors --retry-delay 5 \
+            QHTTP=$(curl -sS $RESOLVE --retry 3 --retry-all-errors --retry-delay 5 \
               -o /tmp/by_query.body -w '%{http_code}' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
@@ -400,9 +424,15 @@ jobs:
           H_SEC="AppSecret: ${APP_SECRET}"
           H_JSON="Content-Type: application/json"
 
+          # Pin the public APIG EIP — runner DNS hijacks the domain to a k8s
+          # apiserver. See the Trigger pipeline step for the full explanation.
+          APIG_EIP="116.63.184.66"
+          APIG_HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#[:/].*##')
+          RESOLVE="--resolve ${APIG_HOST}:443:${APIG_EIP}"
+
           # Reverse-lookup yellowRecordId from the blue task id (same path stop.sh uses).
           QUERY_BODY=$(printf '{"blueRecordId":"%s","blueRecordTaskId":"%s"}' "$BY_BRI" "$BY_BTI")
-          QR=$(curl -sS --max-time 30 --retry 2 --retry-all-errors --retry-delay 3 \
+          QR=$(curl -sS $RESOLVE --max-time 30 --retry 2 --retry-all-errors --retry-delay 3 \
             -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
             -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
           echo "query response: ${QR}"
@@ -427,7 +457,7 @@ jobs:
           }
           EOF
           )
-          R=$(curl -sS --max-time 30 \
+          R=$(curl -sS $RESOLVE --max-time 30 \
             -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
             -X POST "${BASE_URL}/start" -d "${STOP_BODY}" || true)
           echo "stop response: ${R}"
@@ -454,7 +484,9 @@ jobs:
           fi
 
       - name: Remove PR wheels from OBS
-        if: always() && steps.ctx.outputs.pr_id != ''
+        # TEMP: OBS cleanup disabled while testing so wheels survive re-runs.
+        # Restore to: always() && steps.ctx.outputs.pr_id != ''
+        if: false
         shell: bash
         env:
           AK: ${{ secrets.OBS_AK }}
@@ -520,3 +552,143 @@ jobs:
             -f context='Ascend950 Pipeline Tests' \
             -f description="$DESC" \
             -f target_url="$TARGET"
+
+  # ── TEMPORARY test harness ─────────────────────────────────────────────
+  # Manual smoke test of blue/yellow connectivity from the runner. Runs on
+  # the same self-hosted runner as `trigger`, so it reproduces the exact
+  # network environment where APIG was unreachable. Remove once the runner ↔
+  # APIG reachability issue is resolved.
+  dispatch_test:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: linux-aarch64-cpu-1
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
+    steps:
+      - name: Probe network reachability
+        shell: bash
+        env:
+          BASE_URL:   ${{ secrets.BLUE_YELLOW_BASE_URL }}
+          APP_CODE:   ${{ secrets.BLUE_YELLOW_APP_CODE }}
+          APP_KEY:    ${{ secrets.BLUE_YELLOW_APP_KEY }}
+          APP_SECRET: ${{ secrets.BLUE_YELLOW_APP_SECRET }}
+        run: |
+          # Diagnostic only — never fail the job here, we want all probes to run.
+          set +e
+          HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#/.*##')
+          echo "=== APIG host: $HOST ==="
+          echo "--- DNS (what does the runner resolve it to?) ---"
+          getent hosts "$HOST" || nslookup "$HOST" || true
+          echo "--- routes ---"
+          ip route 2>/dev/null | head || true
+          echo "--- APIG connect via internal DNS (expected: refused to private IP) ---"
+          curl -v --connect-timeout 5 -o /dev/null "https://${HOST}/" 2>&1 | tail -20
+          echo "--- APIG connect pinned to PUBLIC EIP 116.63.184.66 (bypass internal DNS) ---"
+          # If this one connects, the runner has public egress and we can work
+          # around the VPC DNS hijack with --resolve / /etc/hosts in trigger.
+          curl -v --resolve "${HOST}:443:116.63.184.66" --connect-timeout 5 \
+            -o /dev/null "https://${HOST}/" 2>&1 | tail -20
+          echo "--- internal IP port scan (which port is actually listening?) ---"
+          IP=$(getent hosts "$HOST" | awk '{print $1}' | head -1)
+          echo "internal IP = ${IP:-unknown}"
+          if [ -n "$IP" ]; then
+            for P in 80 443 8080 8443 18080 18443; do
+              if timeout 3 bash -c ">/dev/tcp/${IP}/${P}" 2>/dev/null; then
+                echo "  port ${P}: OPEN"
+              else
+                echo "  port ${P}: closed/filtered"
+              fi
+            done
+          fi
+          echo "--- internal 8443 as a REAL HTTPS API (authenticated /query) ---"
+          # 8443 is open at TCP level; confirm it actually serves the APIG API.
+          # -k: the intranet endpoint's cert may not match the public domain.
+          PORTED=$(printf '%s' "$BASE_URL" | sed -E 's#(://[^/]+)#\1:8443#')
+          echo "ported url = ${PORTED}/query"
+          curl -sS -k --max-time 10 -w '\nHTTP=%{http_code}\n' \
+            -H "X-Apig-AppCode: ${APP_CODE}" -H "AppKey: ${APP_KEY}" \
+            -H "AppSecret: ${APP_SECRET}" -H "Content-Type: application/json" \
+            -X POST "${PORTED}/query" \
+            -d '{"blueRecordId":"probe","blueRecordTaskId":"probe"}' 2>&1 | tail -8
+          echo "--- OBS baseline (known to work from this runner) ---"
+          curl -sS --connect-timeout 5 -o /dev/null -w 'obs http=%{http_code}\n' \
+            "https://obs.cn-southwest-2.myhuaweicloud.com/" 2>&1 | tail -3
+
+      - name: Start + query + stop smoke test
+        shell: bash
+        env:
+          BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
+          APP_CODE:           ${{ secrets.BLUE_YELLOW_APP_CODE }}
+          APP_KEY:            ${{ secrets.BLUE_YELLOW_APP_KEY }}
+          APP_SECRET:         ${{ secrets.BLUE_YELLOW_APP_SECRET }}
+          YELLOW_PIPELINE_ID: ${{ vars.YELLOW_PIPELINE_ID }}
+          YELLOW_GROUP_ID:    ${{ vars.YELLOW_GROUP_ID }}
+          PR_ID:              ${{ inputs.pr_id }}
+          RUN_STOP:           ${{ inputs.run_stop }}
+          URL_B:              ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -uo pipefail
+          H_CODE="X-Apig-AppCode: ${APP_CODE}"
+          H_KEY="AppKey: ${APP_KEY}"
+          H_SEC="AppSecret: ${APP_SECRET}"
+          H_JSON="Content-Type: application/json"
+
+          # Pin the public APIG EIP — runner DNS hijacks the domain to a k8s
+          # apiserver. See the Trigger pipeline step for the full explanation.
+          APIG_EIP="116.63.184.66"
+          APIG_HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#[:/].*##')
+          RESOLVE="--resolve ${APIG_HOST}:443:${APIG_EIP}"
+
+          TS=$(date +%Y%m%d%H%M%S)
+          BRI="dispatch-${PR_ID}-${TS}"
+          BTI="task-${PR_ID}-${TS}"
+          OBS_URL="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}/dummy.whl"
+
+          START_BODY=$(cat <<EOF
+          {
+            "bluePipelineId": "null",
+            "blueRecordId": "${BRI}",
+            "blueRecordTaskId": "${BTI}",
+            "blueRecordTaskName": "dispatch-smoke-${PR_ID}",
+            "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
+            "yellowGroupId": "${YELLOW_GROUP_ID}",
+            "starter": "z00856207",
+            "branch": "main",
+            "parameter": {
+              "pr": "${PR_ID}",
+              "title": "dispatch smoke test",
+              "description": "${PR_ID}",
+              "url_b": "${URL_B}",
+              "branch_b": "main",
+              "obs_url": "${OBS_URL}"
+            }
+          }
+          EOF
+          )
+          echo "=== POST /start ==="
+          curl -sS $RESOLVE --max-time 70 -w '\nHTTP=%{http_code}\n' \
+            -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+            -X POST "${BASE_URL}/start" -d "${START_BODY}"
+
+          QUERY_BODY=$(printf '{"blueRecordId":"%s","blueRecordTaskId":"%s"}' "$BRI" "$BTI")
+          echo "=== poll /query (up to 5x, 10s apart) ==="
+          YRI=""
+          for i in 1 2 3 4 5; do
+            sleep 10
+            QR=$(curl -sS $RESOLVE --max-time 30 \
+              -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+              -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
+            echo "[#${i}] ${QR}"
+            YRI=$(printf '%s' "$QR" | grep -o '"yellowRecordId":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+            [ -n "$YRI" ] && [ "$YRI" != "null" ] && break
+          done
+
+          if [ "${RUN_STOP}" = "true" ] && [ -n "$YRI" ] && [ "$YRI" != "null" ]; then
+            echo "=== POST /start actionType=stop (yellowRecordId=${YRI}) ==="
+            STOP_BODY=$(printf '{"bluePipelineId":"null","blueRecordId":"%s","blueRecordTaskId":"stop-%s-%s","yellowPipelineId":"%s","yellowGroupId":"%s","starter":"z00856207","actionType":"stop","yellowRecordId":"%s"}' \
+              "$BRI" "$BTI" "$TS" "$YELLOW_PIPELINE_ID" "$YELLOW_GROUP_ID" "$YRI")
+            curl -sS $RESOLVE --max-time 30 -w '\nHTTP=%{http_code}\n' \
+              -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
+              -X POST "${BASE_URL}/start" -d "${STOP_BODY}"
+          else
+            echo "skip stop (run_stop=${RUN_STOP}, yellowRecordId=${YRI:-none})"
+          fi
