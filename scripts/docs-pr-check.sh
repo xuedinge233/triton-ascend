@@ -11,24 +11,27 @@
 # published on the `ci` branch of openeuler/docs-website; we fetch it at run
 # time (or reuse a local copy if one is already present next to this repo).
 #
-# The check rules are NOT defined here either: they live in the central, shared
-# config at gitcode Ascend/docs/.doctools/config.json, which already has an
-# entry for Ascend/triton-ascend. We only point the checker at that config.
+# The check rules live in this repo, under .github/docs-ci/ (config.json plus
+# the markdownlint rules and link whitelist it references). Paths inside that
+# config are repo-root-relative, which is why this script cd's to the repo root
+# before invoking the checker.
 #
 # Usage:
 #   scripts/docs-pr-check.sh [base-ref]
 #
 # Environment overrides:
 #   DOCS_BASE_REF       base ref to diff against (default: $1, else origin/main)
-#   DOCS_TARGET_REPO    owner/repo key for CI config lookup. MUST be the gitcode
-#                       name (Ascend/triton-ascend), not the GitHub repo name,
-#                       or the central config entry won't match.
-#   DOCS_CI_CONFIG      CI config path or URL (default: central gitcode config)
+#   DOCS_TARGET_REPO    owner/repo key for CI config lookup; "all" in our config
+#                       matches any value. (default below)
+#   DOCS_CI_CONFIG      CI config path or URL (default: local .github/docs-ci/config.json)
 #   DOCS_CLI            path to docs-ci-v2.js; if it exists it is used as-is,
 #                       otherwise the checker is downloaded to this path
 #                       (default: <repo-root>/.cache/docs-ci-v2.js)
 #   DOCS_CLI_URL        download source for the checker (default: official ci branch)
 #   DOCS_CLI_SHA256     optional expected sha256 of the checker; verified if set
+#   DOCS_NEED_CSPELL    force-enable cspell-lib install (auto-detected from the
+#                       config containing "codespell-check" otherwise)
+#   DOCS_CSPELL_VERSION cspell-lib version to install (default: 9.2.1)
 #   DOCS_OUTPUT_COUNT   max errors listed in output.md (default: 50)
 #   DOCS_OUTPUT_PATH    output report path (default: <repo-root>/output.md)
 #   DOCS_CHECK_ALL      set to "true" to check all docs, not just changed ones
@@ -39,7 +42,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 BASE_REF="${DOCS_BASE_REF:-${1:-origin/main}}"
 TARGET_REPO="${DOCS_TARGET_REPO:-Ascend/triton-ascend}"
-CI_CONFIG="${DOCS_CI_CONFIG:-https://raw.gitcode.com/Ascend/docs/raw/master/.doctools/config.json}"
+CI_CONFIG="${DOCS_CI_CONFIG:-$REPO_ROOT/.github/docs-ci/config.json}"
 CLI_URL="${DOCS_CLI_URL:-https://raw.gitcode.com/openeuler/docs-website/raw/ci/docs-ci-v2.js}"
 OUTPUT_COUNT="${DOCS_OUTPUT_COUNT:-50}"
 OUTPUT_PATH="${DOCS_OUTPUT_PATH:-$REPO_ROOT/output.md}"
@@ -63,6 +66,22 @@ if [ -n "${DOCS_CLI_SHA256:-}" ]; then
   fi
 fi
 
+# codespell-check relies on cspell-lib and its dictionaries, which the bundle
+# resolves from node_modules next to itself. Install them on demand (the bundle
+# alone has no dictionary data, so without this every word is flagged).
+NEED_CSPELL="${DOCS_NEED_CSPELL:-}"
+if [ -z "$NEED_CSPELL" ] && [ -f "$CI_CONFIG" ] && grep -q "codespell-check" "$CI_CONFIG"; then
+  NEED_CSPELL=1
+fi
+if [ -n "$NEED_CSPELL" ]; then
+  CLI_DIR="$(dirname "$CLI_PATH")"
+  if [ ! -d "$CLI_DIR/node_modules/cspell-lib" ]; then
+    echo "Installing cspell-lib@${DOCS_CSPELL_VERSION:-9.2.1} for codespell-check"
+    [ -f "$CLI_DIR/package.json" ] || printf '{"name":"docs-ci-runtime","private":true}\n' > "$CLI_DIR/package.json"
+    ( cd "$CLI_DIR" && npm i --no-audit --no-fund --loglevel=error "cspell-lib@${DOCS_CSPELL_VERSION:-9.2.1}" )
+  fi
+fi
+
 ARGS=(
   --repoPath="$REPO_ROOT"
   --targetOwnerRepo="$TARGET_REPO"
@@ -76,6 +95,9 @@ if [ "${DOCS_CHECK_ALL:-}" = "true" ]; then
 fi
 
 rm -f "$OUTPUT_PATH"
+# Run from the repo root so repo-root-relative paths in the CI config (the
+# markdownlint rules / whitelist it references) resolve consistently.
+cd "$REPO_ROOT"
 node "$CLI_PATH" "${ARGS[@]}"
 
 if [ ! -f "$OUTPUT_PATH" ]; then

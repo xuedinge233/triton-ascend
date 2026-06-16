@@ -2,7 +2,7 @@ name: Docs PR Check
 
 on:
   pull_request:
-    # The central config (Ascend/triton-ascend -> base) checks any changed
+    # The config (.github/docs-ci/config.json) checks any changed
     # .md / .mdx / _toc.yaml, so trigger on those rather than only docs/.
     paths:
       - '**/*.md'
@@ -34,6 +34,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: Cache docs checker (bundle + cspell dictionaries)
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: docs-ci-${{ runner.os }}-${{ hashFiles('scripts/docs-pr-check.sh') }}
 
       - name: Run docs gate
         env:
