@@ -56,7 +56,12 @@ jobs:
         env:
           # PR: incremental (changed files only). Manual/scheduled: full scan.
           DOCS_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || github.ref_name }}
-          DOCS_CHECK_ALL: ${{ github.event_name != 'pull_request' }}
+          # TEMPORARY: force a full scan on every trigger (incl. PRs) so the
+          # full-scan path can be validated before this lands on main (manual /
+          # scheduled triggers only fire from the default branch).
+          # Restore to `${{ github.event_name != 'pull_request' }}` for
+          # incremental PR checks.
+          DOCS_CHECK_ALL: 'true'
         run: bash scripts/docs-pr-check.sh
 
       - name: Publish report
