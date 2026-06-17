@@ -1,34 +1,45 @@
-name: Docs PR Check
+name: Docs Check
 
 on:
   pull_request:
     # The config (.github/docs-ci/config.json) checks any changed
     # .md / .mdx / _toc.yaml, so trigger on those rather than only docs/.
+    # Also run when the gate's own definition (workflow / config / script)
+    # changes, so those changes get self-validated.
     paths:
       - '**/*.md'
       - '**/*.mdx'
       - '**/_toc.yaml'
+      - '.github/workflows/docs-pr-check.yml'
+      - '.github/docs-ci/**'
+      - 'scripts/docs-pr-check.sh'
+  # Manual + nightly full scans (checkAll) to surface errors in existing docs
+  # that incremental PR runs never touch. These never block a PR.
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * *'  # 02:00 Asia/Shanghai
 
 permissions:
   contents: read
 
 concurrency:
-  group: docs-pr-check-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: docs-check-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.ref != 'refs/heads/main' }}
 
 jobs:
   docs-check:
-    name: Docs gate (changed files)
+    name: Docs gate
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history is required: the checker diffs <base>...HEAD to find
-          # the .md / .mdx / _toc.yaml files changed by this PR.
+          # Full history is required for PR runs: the checker diffs <base>...HEAD
+          # to find the changed docs. (Harmless for full scans.)
           fetch-depth: 0
 
       - name: Fetch base branch
+        if: github.event_name == 'pull_request'
         run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
 
       - uses: actions/setup-node@v4
@@ -43,7 +54,9 @@ jobs:
 
       - name: Run docs gate
         env:
-          DOCS_BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+          # PR: incremental (changed files only). Manual/scheduled: full scan.
+          DOCS_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || github.ref_name }}
+          DOCS_CHECK_ALL: ${{ github.event_name != 'pull_request' }}
         run: bash scripts/docs-pr-check.sh
 
       - name: Publish report
@@ -51,7 +64,7 @@ jobs:
         run: |
           if [ -f output.md ]; then
             {
-              echo "## Docs PR Check"
+              echo "## Docs Check"
               echo ""
               cat output.md
             } >> "$GITHUB_STEP_SUMMARY"
