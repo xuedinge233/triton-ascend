@@ -1,0 +1,52 @@
+name: Docs PR Check
+
+on:
+  pull_request:
+    # The central config (Ascend/triton-ascend -> base) checks any changed
+    # .md / .mdx / _toc.yaml, so trigger on those rather than only docs/.
+    paths:
+      - '**/*.md'
+      - '**/*.mdx'
+      - '**/_toc.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-pr-check-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  docs-check:
+    name: Docs gate (changed files)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          # Full history is required: the checker diffs <base>...HEAD to find
+          # the .md / .mdx / _toc.yaml files changed by this PR.
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run docs gate
+        env:
+          DOCS_BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+        run: bash scripts/docs-pr-check.sh
+
+      - name: Publish report
+        if: always()
+        run: |
+          if [ -f output.md ]; then
+            {
+              echo "## Docs PR Check"
+              echo ""
+              cat output.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
