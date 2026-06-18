@@ -4,9 +4,7 @@ name: Docs preview status
 # see the docs preview link in the PR checks list without needing the RTD
 # GitHub App installed.
 #
-# Optional repo secret: RTD_TOKEN (RTD account -> API tokens). Only needed for
-# a private RTD project or a higher API rate limit; a public project's builds
-# API is read anonymously.
+# Requires repo secret: RTD_TOKEN (RTD account -> API tokens).
 #
 # Runs via pull_request_target so the built-in GITHUB_TOKEN can write commit
 # statuses (a fork's pull_request token is read-only). We never check out PR
@@ -29,12 +27,9 @@ jobs:
   poll:
     runs-on: ubuntu-latest
     env:
-      RTD_PROJECT: triton-ascend-docs-cn
+      RTD_PROJECT: triton-ascend
       MAX_WAIT_MIN: '20'
-      # Gentle polling: a public RTD project's builds API is read without auth,
-      # so a low cadence keeps us well under anonymous rate limits (~13 requests
-      # over the full 20 min window).
-      POLL_INTERVAL_SEC: '90'
+      POLL_INTERVAL_SEC: '30'
     steps:
       - uses: actions/github-script@v7
         env:
@@ -71,16 +66,14 @@ jobs:
             // Initial pending state so the check shows up immediately.
             await setStatus('pending', 'Waiting for Read the Docs build...');
 
-            // RTD_TOKEN is optional: a public project's builds API is readable
-            // anonymously. The token is only needed for private projects (or
-            // for a higher rate limit), so send it only when configured.
-            const authHeaders = token ? { headers: { Authorization: `Token ${token}` } } : {};
-            // Documented project builds list, filtered to this PR's head commit.
-            // RTD builds the external (PR) version from the head SHA, so ?commit=
-            // pins the status to the exact commit under test rather than a
-            // superseded build. Results are newest-first; [0] is the latest
-            // attempt for this commit. (?version= is ignored by the API, and the
-            // /versions/<pr>/ detail route 404s for external versions.)
+            if (!token) {
+              await setStatus('error', 'RTD_TOKEN secret not configured');
+              core.setFailed('RTD_TOKEN secret is not set on this repo.');
+              return;
+            }
+
+            const authHeaders = { headers: { Authorization: `Token ${token}` } };
+            // Builds for this PR's head commit, newest first.
             const buildsUrl  = `https://app.readthedocs.org/api/v3/projects/${project}/builds/?commit=${sha}`;
             const deadline = Date.now() + maxWaitMin * 60 * 1000;
             const sleep = ms => new Promise(r => setTimeout(r, ms));
