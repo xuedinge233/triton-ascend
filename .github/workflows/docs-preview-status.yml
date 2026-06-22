@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  poll:
+  docs-preview-check:
     runs-on: ubuntu-latest
     env:
       RTD_PROJECT: triton-ascend

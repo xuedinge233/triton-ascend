@@ -27,7 +27,7 @@ if [ "${READTHEDOCS_VERSION_TYPE:-}" = "external" ]; then
   git fetch --depth=100 origin main:refs/remotes/origin/main 2>/dev/null || true
   base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse origin/main 2>/dev/null || true)"
   if [ -n "$base" ] && git diff --quiet "$base" HEAD -- \
-        "docs/${lang}/" .readthedocs.yaml scripts/readthedocs_checkout.sh; then
+        "docs/" .readthedocs.yaml scripts/readthedocs_checkout.sh; then
     echo "No relevant changes in this PR; cancelling build."
     exit 183
   fi
