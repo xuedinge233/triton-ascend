@@ -92,6 +92,7 @@ Triton Ascend
     :maxdepth: 1
     :caption: Contributing Guide
 
+    community/CONTRIBUTING.md
     community/roadmap_guide.md
     community/issue-workflow-guidelines.md
 
@@ -99,6 +100,8 @@ Triton Ascend
     :maxdepth: 1
     :caption: Community Governance
 
+    community/GOVERNANCE.md
     community/community_technical_meeting.md
     community/release_policy.md
+    community/MAINTAINERS.md
     community/contributor.md

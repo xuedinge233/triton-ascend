@@ -1,1 +1,1 @@
-../../en/community/contributor.md
+../../../contributor.md
