@@ -16,7 +16,7 @@ The following command is an example of collecting performance data of an operato
 msprof op --kernel-name=target_kernel_name --output=$HOME/projects/output python3 $HOME/projects/test_op.py
 ```
 
-The following uses the [03-layer-norm.py](../../../third_party/ascend/tutorials/03-layer-norm.py) test case as an example (the generated data file is saved in the current path when **if --output** is not specified):
+The following uses the [05-layer-norm.py](./../../../third_party/ascend/tutorials/05-layer-norm.py) test case as an example (the generated data file is saved in the current path when **if --output** is not specified):
 
 ```python
 msprof op --kernel-name=_layer_norm_fwd_fused python3 03-layer-norm.py

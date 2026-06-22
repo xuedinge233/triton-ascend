@@ -1,14 +1,17 @@
-# Agenda:
+# Agenda
+
 1. Improving ILP (Instruction Level Parallelism) with Warp Specialization
 2. Triton-shared (Progress and updates)
 3. Question about generic tensor descriptors
 
-# Meeting notes:
+# Meeting notes
 
 ## Improving ILP (Instruction Level Parallelism) with Warp Specialization
+
 Speakers: Hongtao Yu (Meta), Yuanwei (Kevin) Fang (Meta), Manman Ren (Meta)
 
 Notes:
+
 * Pytorch 2.6 with Triton release branch 3.2
 * Targeting: Nvidia Hopper arch, Blackwell coming soon.
 * Performance
@@ -17,7 +20,7 @@ Notes:
 * What is warp specialization?
   * Improves hardware instruction scheduling. GPUs don’t have good dynamic instruction scheduling.
   * Use multi-way warp scheduler. Allows warps on a single core targeting different function units (e.g. memory, ALU, tensor core, etc.)  All run in parallel.
-* Comparison using GEMM * *
+* Comparison using GEMM **
   * Uniform warps: 8 warps, each loading/processing 1/8th of data.  Divided into two groups, each doing ½ the data. Good for GEMM but not for more complicated kernels.
   * Warp specialized: 12 warps, 4 warps for producing data-only do load, 8 for wgmma-only do wmma.  Frees up more capacity for more complex kernels like flash attention.
 * Compiler implementation
@@ -62,6 +65,7 @@ Notes:
     * Ping-pong is named barrier pair. Only one consumer can be in region.
 
 ## Questions
+
 * Q> Is there an equivalent warp group for AMD? Does this apply to AMD GPUs?
 * A> Meta is doing this for AMD. No named barrier in AMD. Simulating this using shared-memory atomics on AMD to get the same effect.
 
@@ -75,17 +79,20 @@ Notes:
 * A> Flash attention: 20%  + computational pipelining and ping-pong scheduling approaches flash attention v3 performance.
 
 ## Triton-shared (Progress and updates)
+
 Presenter: Nhat Nguyen (Microsoft), Haishan Zhu (Meta)
 
 Notes:
 
-### Goal:
+### Goal
+
 * Lower Triton IR to mlir core dialects (linalg, memref, …)  Easier path to running on CPUs.
 * Focus on supporting strided memory access for accelerators
-* Open-sourced at https://github.com/microsoft/triton-shared
+* Open-sourced at <https://github.com/microsoft/triton-shared>
   * Trying to keep it in sync with OSS triton (albeit a little delayed)
 
 ### Progress
+
 * Modularizing compiler passes. Decoupled data extraction from lowering. Allowed for customized lowering flows. Predictable behavior for analysis failures.
   * Triton-to-structured
   * triton-arith-to-linalg
@@ -97,22 +104,27 @@ Notes:
 * Support lowering triton ops to linalg/mlir (split, join, cat, etc.)
 
 ### Roadmap
+
 * Complete support for non-contiguous pointers
 * Detect other memory access patterns (e.g. row-gather/scatter pointer sequences)
 * Extend to control flow ops
 
-### Thanks!
+### Thanks
+
 Meta, Qualcomm and community
 
 ### Questions
+
 * Q> Future plans, what are the higher priority items you want to work on?
 * A> Many Triton kernel have memory access patterns  that can’t be detected. We don’t have fall back solutions (e.g. gather-scatter support). Need to wait for the mlir pointer dialect to land so we can use it.  MxN loads pointer analysis fails if loads are contiguous. But rows may be contiguous so we can split analysis into multiple chunks (row scatter, row gather).
 * A> In places where pointer analysis can’t extract information, we leave the IR intact so existing passes that can deal with them. We can handle loop iteration over tensors of pointers (common patterns). More complicated operations like if/else look like low hanging fruit.
 
 ## Questions about Generic Tensor Descriptor
+
 * Q> What is the progress on generic tensor descriptor programming?  Not Nvidia specific. (from last month).
 * A> TMA accelerator will probably become more general across GPUs.
 * A> TMA (tensor descriptors) support should be landing over next few weeks.  Will add compatibility mode for GPUs without TMA (but will probably be slower).  And will be adding block pointer support.  We will deprecate host side tensor descriptors (only provided minor performance benefit for persistent kernels).  Allow user to autotune.
 
-## Minutes:
+## Minutes
+
 Recording link [here](https://www.youtube.com/watch?v=cIW6ZL_LmGc)

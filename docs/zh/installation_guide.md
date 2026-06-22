@@ -1,6 +1,7 @@
 # 安装指南
 
 请根据需要，选择不同的安装方式，跳转至对应步骤：
+
 - **基于Docker镜像快速搭建**：直接使用Triton-Ascend发布的开箱即用的镜像，快速构筑开发环境。请直接按[OVERVIEW.zh.md](../../docker/OVERVIEW.zh.md)操作；
 - **基于pip安装**：直接尝试使用TA的pip包选择此项。请先前往下一步<a href="#env-prepare">环境准备</a>完成前置配置，再进行pip安装操作；
 - **基于源码安装**：基于TA的开发者选择此项。请先前往下一步<a href="#env-prepare">环境准备</a>完成前置配置，再选择<a href="#auto-code-base">快速安装</a>或<a href="#hand-code-base">手动安装</a>其中一种方式操作；
@@ -47,6 +48,7 @@ docker run -u 0 -dit --shm-size=512g --name=${container_name} --net=host --privi
 quay.io/ascend/triton:${image_tag} \
 /bin/bash
 ```
+
 ### 进入容器
 
 ```bash
@@ -57,11 +59,12 @@ docker exec -it triton-ascend_container bash
 
 观察到类似的输出即说明环境已搭建完成。
 
-```
+```bash
     tensor([0.8329, 1.0024, 1.3639,  ..., 1.0796, 1.0406, 1.5811], device='npu:0')
     tensor([0.8329, 1.0024, 1.3639,  ..., 1.0796, 1.0406, 1.5811], device='npu:0')
     The maximum difference between torch and triton is 0.0
 ```
+
 ## 其他三种搭建方式
 
 <a id="env-prepare"></a>

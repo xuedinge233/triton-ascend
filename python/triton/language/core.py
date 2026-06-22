@@ -880,27 +880,27 @@ class tensor(base_value):
 
     @builtin
     def __add__(self, other, _semantic=None):
-        return add(self, other, sanitize_overflow=False, _semantic=_semantic)
+        return add(self, other, sanitize_overflow=True, _semantic=_semantic)
 
     @builtin
     def __radd__(self, other, _semantic=None):
-        return add(other, self, sanitize_overflow=False, _semantic=_semantic)
+        return add(other, self, sanitize_overflow=True, _semantic=_semantic)
 
     @builtin
     def __sub__(self, other, _semantic=None):
-        return sub(self, other, sanitize_overflow=False, _semantic=_semantic)
+        return sub(self, other, sanitize_overflow=True, _semantic=_semantic)
 
     @builtin
     def __rsub__(self, other, _semantic=None):
-        return sub(other, self, sanitize_overflow=False, _semantic=_semantic)
+        return sub(other, self, sanitize_overflow=True, _semantic=_semantic)
 
     @builtin
     def __mul__(self, other, _semantic=None):
-        return mul(self, other, sanitize_overflow=False, _semantic=_semantic)
+        return mul(self, other, sanitize_overflow=True, _semantic=_semantic)
 
     @builtin
     def __rmul__(self, other, _semantic=None):
-        return mul(other, self, sanitize_overflow=False, _semantic=_semantic)
+        return mul(other, self, sanitize_overflow=True, _semantic=_semantic)
 
     @builtin
     def __truediv__(self, other, _semantic=None):
@@ -2077,7 +2077,7 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, care_padding=True, _semantic=None):
+         volatile=False, _semantic=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -2120,11 +2120,6 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type eviction_policy: str, optional
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
-    :param care_padding: represents whether user cares about padding value or not, default is True, works as below:
-        1. if 'other' is not None, 'care_padding' takes no effect.
-        2. if 'other' is None and 'care_padding' = True, loaded tensor will fill zeroes on masked places.
-        3. if 'other' is None and 'care_padding' = False, masked places on loaded tensor will be random values, and tl.load may have a better performence.
-    :type care_padding: bool, optional
     """
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
@@ -2137,9 +2132,8 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
     volatile = _unwrap_if_constexpr(volatile)
-    care_padding = _unwrap_if_constexpr(care_padding)
     return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
-                          volatile, care_padding)
+                          volatile)
 
 
 @builtin

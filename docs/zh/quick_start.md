@@ -241,8 +241,11 @@ def test_add(SIZE, BLOCK_SIZE):
     output_torch = x + y
     assert_close(output, output_torch, rtol=1e-3, atol=1e-3)
 ```
+
 修改完后，可用`pytest`运行用例，执行成功即表明迁移成功。
-```
+
+```bash
 pytest test_add.py
 ```
+
 若未安装`pytest`组件，可使用`pip install pytest`进行安装。
