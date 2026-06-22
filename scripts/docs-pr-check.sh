@@ -57,7 +57,12 @@ fi
 if [ ! -f "$CLI_PATH" ]; then
   echo "Fetching docs checker from $CLI_URL"
   mkdir -p "$(dirname "$CLI_PATH")"
-  curl -fsSL --retry 3 --max-time 120 "$CLI_URL" -o "$CLI_PATH"
+  # gitcode's raw host rejects the default curl User-Agent with HTTP 418, so
+  # present a browser UA (as the checker itself does for its own requests).
+  curl -fsSL --retry 3 --max-time 120 \
+    -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36" \
+    -H "Accept: */*" \
+    "$CLI_URL" -o "$CLI_PATH"
 fi
 
 if [ -n "${DOCS_CLI_SHA256:-}" ]; then
