@@ -27,7 +27,10 @@ Triton Ascend
     :maxdepth: 2
     :caption: Triton Operator Programming Guide
 
-    programming_guide.md
+    programming_guide/index.md
+    programming_guide/vector_operator.md
+    programming_guide/cube_operator.md
+    programming_guide/cv_fusion_operator.md
 
 .. toctree::
     :maxdepth: 2
@@ -49,25 +52,35 @@ Triton Ascend
     examples/05_matrix_multiplication_example.md
     examples/06_autotune_example.md
     examples/07_accuracy_comparison_example.md
+    examples/08_max_autotune_example.md
 
 .. toctree::
     :maxdepth: 2
     :caption: Operator Debugging and Profiling
 
+    autotune_guide.md
+    max_autotune_guide.md
     debug_guide/debugging.md
     debug_guide/profiling.md
+    debug_guide/ub_overflow.md
+
+.. toctree::
+    :maxdepth: 1
+    :caption: Libdevice Developer Guide
+
+    libdevice/libdevice_developer_guide.md
 
 .. toctree::
     :maxdepth: 2
     :caption: Ascend Extension API Reference
 
-    triton_api_extention/index.md
+    triton_api_extension/index.md
 
 .. toctree::
     :maxdepth: 1
-    :caption: Environment Variables
+    :caption: Environment Variables and Compiler Options
 
-    environment_variable_reference.md
+    environment_variable_and_compiler_options_reference.md
 
 .. toctree::
     :maxdepth: 1
@@ -77,6 +90,15 @@ Triton Ascend
 
 .. toctree::
     :maxdepth: 1
-    :caption: Release Note
+    :caption: Contributing Guide
 
-    release_note.md
+    community/roadmap_guide.md
+    community/issue-workflow-guidelines.md
+
+.. toctree::
+    :maxdepth: 1
+    :caption: Community Governance
+
+    community/community_technical_meeting.md
+    community/release_policy.md
+    community/contributor.md

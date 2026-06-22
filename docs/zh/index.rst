@@ -38,6 +38,7 @@ Triton Ascend
 
     migration_guide/architecture_difference.md
     migration_guide/migrate_from_gpu.md
+    migration_guide/performance_guidelines.md
 
 .. toctree::
     :maxdepth: 2
@@ -51,6 +52,7 @@ Triton Ascend
     examples/05_matrix_multiplication_example.md
     examples/06_autotune_example.md
     examples/07_accuracy_comparison_example.md
+    examples/08_max_autotune_example.md
 
 .. toctree::
     :maxdepth: 2
@@ -60,6 +62,7 @@ Triton Ascend
     max_autotune_guide.md
     debug_guide/debugging.md
     debug_guide/profiling.md
+    debug_guide/ub_overflow.md
 
 .. toctree::
     :maxdepth: 3
