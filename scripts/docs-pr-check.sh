@@ -21,8 +21,10 @@
 #
 # Environment overrides:
 #   DOCS_BASE_REF       base ref to diff against (default: $1, else origin/main)
-#   DOCS_TARGET_REPO    owner/repo key for CI config lookup; "all" in our config
-#                       matches any value. (default below)
+#   DOCS_TARGET_REPO    repo this run is for (owner/repo). Used to look up the
+#                       config (falls back to the "all" entry) and to whitelist
+#                       links pointing at the repo itself. The workflow passes
+#                       the real github.repository; default "all" suits local runs.
 #   DOCS_CI_CONFIG      CI config path or URL (default: local .github/docs-ci/config.json)
 #   DOCS_CLI            path to docs-ci-v2.js; if it exists it is used as-is,
 #                       otherwise the checker is downloaded to this path
@@ -41,7 +43,7 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 BASE_REF="${DOCS_BASE_REF:-${1:-origin/main}}"
-TARGET_REPO="${DOCS_TARGET_REPO:-Ascend/triton-ascend}"
+TARGET_REPO="${DOCS_TARGET_REPO:-all}"
 CI_CONFIG="${DOCS_CI_CONFIG:-$REPO_ROOT/.github/docs-ci/config.json}"
 CLI_URL="${DOCS_CLI_URL:-https://raw.gitcode.com/openeuler/docs-website/raw/ci/docs-ci-v2.js}"
 OUTPUT_COUNT="${DOCS_OUTPUT_COUNT:-50}"

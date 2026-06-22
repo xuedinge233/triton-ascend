@@ -1,7 +1,7 @@
 {
   "name": "triton-ascend docs check config",
-  "repo": {
-    "all": {
+  "config": {
+    "base": {
       "docPath": "^(?!.*menu).*$",
       "markdownlintRemoteConfigUrl": ".github/docs-ci/markdownlint.config.json",
       "linkValidityCheckRemoteWhitelistUrl": ".github/docs-ci/url.whitelist.json",
@@ -15,5 +15,9 @@
         "codespell-check"
       ]
     }
+  },
+  "repo": {
+    "triton-lang/triton-ascend": { "extendConfig": "base" },
+    "all": { "extendConfig": "base" }
   }
 }

@@ -54,6 +54,7 @@ jobs:
 
       - name: Run docs gate
         env:
+          DOCS_TARGET_REPO: ${{ github.repository }}
           # PR: incremental (changed files only). Manual/scheduled: full scan.
           DOCS_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || github.ref_name }}
           # TEMPORARY: force a full scan on every trigger (incl. PRs) so the
