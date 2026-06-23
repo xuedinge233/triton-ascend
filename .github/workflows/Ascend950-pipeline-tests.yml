@@ -231,16 +231,6 @@ jobs:
           H_SEC="AppSecret: ${APP_SECRET}"
           H_JSON="Content-Type: application/json"
 
-          # The runner's /etc/hosts hijacks the public APIG domain to an
-          # in-cluster kube-apiserver (10.0.1.x:8443), which 403s us. Pin the
-          # real public EIP so curl reaches the actual API gateway. The domain
-          # (and thus SNI / cert validation) is unchanged, so no -k is needed.
-          # NOTE: hard-coded EIP — update if the APIG instance's EIP changes;
-          # the proper long-term fix is to correct the runner DNS.
-          APIG_EIP="116.63.184.66"
-          APIG_HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#[:/].*##')
-          RESOLVE="--resolve ${APIG_HOST}:443:${APIG_EIP}"
-
           TS=$(date +%Y%m%d%H%M%S)
           BRI="pr-${PR_ID}-${TS}"
           BTI="task-${PR_ID}-${TS}"
@@ -279,7 +269,7 @@ jobs:
             "blueRecordTaskName": "PR-${PR_ID}-CI",
             "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
             "yellowGroupId": "${YELLOW_GROUP_ID}",
-            "starter": "z00856207",
+            "starter": "p_TritonCI",
             "branch": "main",
             "parameter": {
               "pr": "${PR_ID}",
@@ -301,7 +291,7 @@ jobs:
           LAST_R=""; LAST_BODY=""
           DUP_RE='(exist|duplicate|already)'
           for ((I=1; I<=5; I++)); do
-            R=$(curl -sS $RESOLVE --max-time 70 \
+            R=$(curl -sS --max-time 70 \
               -o /tmp/by_start.body -w '%{http_code}' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/start" -d "${START_BODY}" || echo "000")
@@ -344,7 +334,7 @@ jobs:
           ST=""; MSG=""; DONE=false
           for ((N=1; N<=720; N++)); do
             sleep 60
-            QHTTP=$(curl -sS $RESOLVE --retry 3 --retry-all-errors --retry-delay 5 \
+            QHTTP=$(curl -sS --retry 3 --retry-all-errors --retry-delay 5 \
               -o /tmp/by_query.body -w '%{http_code}' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
@@ -424,15 +414,9 @@ jobs:
           H_SEC="AppSecret: ${APP_SECRET}"
           H_JSON="Content-Type: application/json"
 
-          # Pin the public APIG EIP — runner DNS hijacks the domain to a k8s
-          # apiserver. See the Trigger pipeline step for the full explanation.
-          APIG_EIP="116.63.184.66"
-          APIG_HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#[:/].*##')
-          RESOLVE="--resolve ${APIG_HOST}:443:${APIG_EIP}"
-
           # Reverse-lookup yellowRecordId from the blue task id (same path stop.sh uses).
           QUERY_BODY=$(printf '{"blueRecordId":"%s","blueRecordTaskId":"%s"}' "$BY_BRI" "$BY_BTI")
-          QR=$(curl -sS $RESOLVE --max-time 30 --retry 2 --retry-all-errors --retry-delay 3 \
+          QR=$(curl -sS --max-time 30 --retry 2 --retry-all-errors --retry-delay 3 \
             -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
             -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
           echo "query response: ${QR}"
@@ -451,13 +435,13 @@ jobs:
             "blueRecordTaskId": "stop-${BY_BTI}-${TS}",
             "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
             "yellowGroupId": "${YELLOW_GROUP_ID}",
-            "starter": "z00856207",
+            "starter": "p_TritonCI",
             "actionType": "stop",
             "yellowRecordId": "${YRI}"
           }
           EOF
           )
-          R=$(curl -sS $RESOLVE --max-time 30 \
+          R=$(curl -sS --max-time 30 \
             -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
             -X POST "${BASE_URL}/start" -d "${STOP_BODY}" || true)
           echo "stop response: ${R}"
@@ -632,12 +616,6 @@ jobs:
           H_SEC="AppSecret: ${APP_SECRET}"
           H_JSON="Content-Type: application/json"
 
-          # Pin the public APIG EIP — runner DNS hijacks the domain to a k8s
-          # apiserver. See the Trigger pipeline step for the full explanation.
-          APIG_EIP="116.63.184.66"
-          APIG_HOST=$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#[:/].*##')
-          RESOLVE="--resolve ${APIG_HOST}:443:${APIG_EIP}"
-
           TS=$(date +%Y%m%d%H%M%S)
           BRI="dispatch-${PR_ID}-${TS}"
           BTI="task-${PR_ID}-${TS}"
@@ -651,7 +629,7 @@ jobs:
             "blueRecordTaskName": "dispatch-smoke-${PR_ID}",
             "yellowPipelineId": "${YELLOW_PIPELINE_ID}",
             "yellowGroupId": "${YELLOW_GROUP_ID}",
-            "starter": "z00856207",
+            "starter": "p_TritonCI",
             "branch": "main",
             "parameter": {
               "pr": "${PR_ID}",
@@ -665,7 +643,7 @@ jobs:
           EOF
           )
           echo "=== POST /start ==="
-          curl -sS $RESOLVE --max-time 70 -w '\nHTTP=%{http_code}\n' \
+          curl -sS --max-time 70 -w '\nHTTP=%{http_code}\n' \
             -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
             -X POST "${BASE_URL}/start" -d "${START_BODY}"
 
@@ -674,7 +652,7 @@ jobs:
           YRI=""
           for i in 1 2 3 4 5; do
             sleep 10
-            QR=$(curl -sS $RESOLVE --max-time 30 \
+            QR=$(curl -sS --max-time 30 \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
             echo "[#${i}] ${QR}"
@@ -684,9 +662,9 @@ jobs:
 
           if [ "${RUN_STOP}" = "true" ] && [ -n "$YRI" ] && [ "$YRI" != "null" ]; then
             echo "=== POST /start actionType=stop (yellowRecordId=${YRI}) ==="
-            STOP_BODY=$(printf '{"bluePipelineId":"null","blueRecordId":"%s","blueRecordTaskId":"stop-%s-%s","yellowPipelineId":"%s","yellowGroupId":"%s","starter":"z00856207","actionType":"stop","yellowRecordId":"%s"}' \
+            STOP_BODY=$(printf '{"bluePipelineId":"null","blueRecordId":"%s","blueRecordTaskId":"stop-%s-%s","yellowPipelineId":"%s","yellowGroupId":"%s","starter":"p_TritonCI","actionType":"stop","yellowRecordId":"%s"}' \
               "$BRI" "$BTI" "$TS" "$YELLOW_PIPELINE_ID" "$YELLOW_GROUP_ID" "$YRI")
-            curl -sS $RESOLVE --max-time 30 -w '\nHTTP=%{http_code}\n' \
+            curl -sS --max-time 30 -w '\nHTTP=%{http_code}\n' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/start" -d "${STOP_BODY}"
           else
