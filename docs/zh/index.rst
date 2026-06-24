@@ -110,4 +110,4 @@ Triton Ascend
     community/community_technical_meeting.md
     community/release_policy.md
     community/MAINTAINERS.md
-    community/contributor.md
+    community/CONTRIBUTOR.md
