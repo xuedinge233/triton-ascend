@@ -225,6 +225,11 @@ jobs:
           # Flow: POST /start -> poll /query -> exit on terminal status (SUCCESS=0).
           set -euo pipefail
 
+          # Scratch files live in $RUNNER_TEMP — the in-container temp that
+          # persists across steps. Do NOT use ${{ runner.temp }}: on this
+          # self-hosted container runner the host path differs from the
+          # container mount, so the write lands somewhere later steps can't see
+          # and the status ends up "UNKNOWN: no status file produced".
           STATUS_FILE="$RUNNER_TEMP/by-status"
 
           H_CODE="X-Apig-AppCode: ${APP_CODE}"
@@ -374,12 +379,14 @@ jobs:
           APP_SECRET:         ${{ secrets.BLUE_YELLOW_APP_SECRET }}
           YELLOW_PIPELINE_ID: ${{ vars.YELLOW_PIPELINE_ID }}
           YELLOW_GROUP_ID:    ${{ vars.YELLOW_GROUP_ID }}
-          STATUS_FILE:        ${{ runner.temp }}/by-status
-          IDS_FILE:           ${{ runner.temp }}/by-ids
         run: |
           # Best-effort cleanup: never let a stop failure mask the real job
           # result, so no `set -e`.
           set -uo pipefail
+
+          # Same in-container temp the Trigger pipeline step wrote to.
+          STATUS_FILE="$RUNNER_TEMP/by-status"
+          IDS_FILE="$RUNNER_TEMP/by-ids"
 
           # Recover the blue identifiers the Trigger pipeline step wrote to disk
           # (it cannot use $GITHUB_ENV — that is lost when the step is cancelled).
