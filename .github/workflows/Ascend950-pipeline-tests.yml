@@ -693,22 +693,28 @@ jobs:
             -X POST "${BASE_URL}/start" -d "${START_BODY}"
 
           QUERY_BODY=$(printf '{"blueRecordId":"%s","blueRecordTaskId":"%s"}' "$BRI" "$BTI")
-          echo "=== poll /query (up to 5x, 10s apart) ==="
+          echo "=== poll /query (up to 20x, 30s apart ≈ 10min) — watch if yellowRecordId ever appears ==="
           YRI=""
-          for i in 1 2 3 4 5; do
-            sleep 10
+          for ((i=1; i<=20; i++)); do
+            sleep 30
             QR=$(curl -sS --max-time 30 \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/query" -d "${QUERY_BODY}" || true)
-            echo "[#${i}] ${QR}"
-            YRI=$(printf '%s' "$QR" | grep -o '"yellowRecordId":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-            [ -n "$YRI" ] && [ "$YRI" != "null" ] && break
+            ST=$(printf '%s' "$QR"    | grep -o '"status":"[^"]*"'            | head -1 | cut -d'"' -f4 || true)
+            YPURL=$(printf '%s' "$QR" | grep -o '"yellowPipelineUrl":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+            YRI=$(printf '%s' "$QR"   | grep -o '"yellowRecordId":"[^"]*"'    | head -1 | cut -d'"' -f4 || true)
+            echo "[#${i}] status=${ST:-?} yellowRecordId=${YRI:-<absent>} yellowPipelineUrl=${YPURL:-<null>}"
+            echo "  raw: ${QR}"
+            if [ -n "$YRI" ] && [ "$YRI" != "null" ]; then
+              echo ">>> yellowRecordId appeared at poll #${i}"
+              break
+            fi
           done
 
           if [ "${RUN_STOP}" = "true" ] && [ -n "$YRI" ] && [ "$YRI" != "null" ]; then
             echo "=== POST /start actionType=stop (yellowRecordId=${YRI}) ==="
-            STOP_BODY=$(printf '{"bluePipelineId":"null","blueRecordId":"%s","blueRecordTaskId":"stop-%s-%s","yellowPipelineId":"%s","yellowGroupId":"%s","starter":"p_TritonCI","actionType":"stop","yellowRecordId":"%s"}' \
-              "$BRI" "$BTI" "$TS" "$YELLOW_PIPELINE_ID" "$YELLOW_GROUP_ID" "$YRI")
+            STOP_BODY=$(printf '{"bluePipelineId":"null","blueRecordId":"%s","blueRecordTaskId":"%s","yellowPipelineId":"%s","yellowGroupId":"%s","starter":"p_TritonCI","actionType":"stop","yellowRecordId":"%s"}' \
+              "$BRI" "$BTI" "$YELLOW_PIPELINE_ID" "$YELLOW_GROUP_ID" "$YRI")
             curl -sS --max-time 30 -w '\nHTTP=%{http_code}\n' \
               -H "$H_CODE" -H "$H_KEY" -H "$H_SEC" -H "$H_JSON" \
               -X POST "${BASE_URL}/start" -d "${STOP_BODY}"
