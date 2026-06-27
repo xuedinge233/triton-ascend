@@ -1,4 +1,4 @@
-FROM centos:7
+FROM centos:7 AS build
 ARG llvm_dir=llvm-project
 # Add the cache artifacts and the LLVM source tree to the container
 COPY sccache /sccache
@@ -54,3 +54,10 @@ RUN cmake -GNinja -Bbuild \
   /source/llvm-project/llvm
 
 RUN ninja -C build install
+
+# Export stage: `buildctl --opt target=export --output type=local,dest=out`
+# writes only these paths (out/install, out/sccache) to the runner — no Docker
+# daemon, no `docker cp`.
+FROM scratch AS export
+COPY --from=build /install /install
+COPY --from=build /sccache /sccache
