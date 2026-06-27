@@ -27,17 +27,24 @@ jobs:
   build:
     name: Build on ${{ matrix.config.runner }}
     runs-on: ${{ matrix.config.runs_on }}
+    # Self-hosted heavy-build runners (mirrors Ascend950 Wheels Build):
+    # x86 cells -> linux-amd64-cpu-16, arm cells -> linux-aarch64-cpu-16.
+    # NOTE: the centos/almalinux cells invoke `docker build`, so the
+    # self-hosted node must expose the Docker socket (docker-in-docker);
+    # otherwise those cells need to drop the container or build on a DinD node.
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
     timeout-minutes: 240
 
     strategy:
       fail-fast: true
       matrix:
         config:
-        - {runner: 'Ubuntu 22.04', runs_on: 'ubuntu-22.04', target-os: 'ubuntu', arch: 'x64'}
-        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'ubuntu', arch: 'arm64'}
-        - {runner: 'CentOS 7', runs_on: 'ubuntu-22.04', target-os: 'centos', arch: 'x64'}
-        - {runner: 'AlmaLinux 8', runs_on: 'ubuntu-22.04', target-os: 'almalinux', arch: 'x64'}
-        - {runner: 'AlmaLinux 8 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'almalinux', arch: 'arm64'}
+        - {runner: 'Ubuntu 22.04', runs_on: 'linux-amd64-cpu-16', target-os: 'ubuntu', arch: 'x64'}
+        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'linux-aarch64-cpu-16', target-os: 'ubuntu', arch: 'arm64'}
+        - {runner: 'CentOS 7', runs_on: 'linux-amd64-cpu-16', target-os: 'centos', arch: 'x64'}
+        - {runner: 'AlmaLinux 8', runs_on: 'linux-amd64-cpu-16', target-os: 'almalinux', arch: 'x64'}
+        - {runner: 'AlmaLinux 8 ARM64', runs_on: 'linux-aarch64-cpu-16', target-os: 'almalinux', arch: 'arm64'}
 
     steps:
 

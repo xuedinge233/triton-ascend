@@ -25,7 +25,14 @@ permissions:
 jobs:
   build-images:
     name: Build ${{ matrix.cann_version }}-${{ matrix.chip_type }}-${{ matrix.os }}-py${{ matrix.python_version }}
-    runs-on: ubuntu-22.04
+    # Self-hosted heavy-build runner (mirrors Ascend950 Wheels Build). Builds
+    # linux/amd64+linux/arm64 in one buildx invocation via QEMU, so it runs on
+    # the x86 node.
+    # NOTE: this job drives `docker buildx`, so the self-hosted node must
+    # provide a working Docker daemon (socket mounted / docker-in-docker).
+    runs-on: linux-amd64-cpu-16
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
 
     strategy:
       fail-fast: false
