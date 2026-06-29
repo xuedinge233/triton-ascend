@@ -1,0 +1,95 @@
+# Buildkitd TLS cert injection for the self-hosted GitHub Actions runners.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The buildctl-based workflows (llvm-build.yml, build-docker-image.yml) talk to
+# the in-cluster buildkitd daemon over mTLS. The client certs (ca/cert/key.pem)
+# and a docker config.json are NOT stored as GitHub secrets — they are injected
+# into each runner pod's filesystem by the HashiCorp Vault agent sidecar, the
+# same way vllm-omni does it in .buildkite/pipeline-npu.yaml.
+#
+# GitHub Actions workflows cannot patch their own pod spec (unlike Buildkite's
+# `kubernetes` plugin), so these annotations live on the RUNNER POD TEMPLATE and
+# are applied once by whoever manages the ARC (Actions Runner Controller)
+# install — NOT by the workflow. The workflows just read the files from
+# BUILDKITD_CERT_DIR (default /home/runner/.docker), which must equal
+# `vault.hashicorp.com/secret-volume-path` below.
+#
+# Vault path internal/data/ascend/buildkitd is expected to expose keys:
+#   RootCA, ClientCaCert, ClientCaKey, dockerConfig
+#
+# ---------------------------------------------------------------------------
+# OPTION A — ARC gha-runner-scale-set (current ARC). Merge into the Helm values
+# for the scale set backing `linux-amd64-cpu-16` / `linux-aarch64-cpu-16`:
+#
+#   helm upgrade <release> oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+#     -f this-values.yaml
+# ---------------------------------------------------------------------------
+template:
+  metadata:
+    annotations:
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/role: ascend-gha-runners
+      vault.hashicorp.com/secret-volume-path: /home/runner/.docker/
+      vault.hashicorp.com/tls-skip-verify: "true"
+      vault.hashicorp.com/agent-run-as-user: "1000"
+      vault.hashicorp.com/agent-run-as-group: "1000"
+      vault.hashicorp.com/agent-service-account-token-volume-name: token-vol
+
+      vault.hashicorp.com/agent-inject-secret-ca.pem: internal/data/ascend/buildkitd
+      vault.hashicorp.com/agent-inject-perms-ca.pem: "0400"
+      vault.hashicorp.com/agent-inject-template-ca.pem: |
+        {{- with secret "internal/data/ascend/buildkitd" -}}
+        {{ .Data.data.RootCA }}
+        {{- end }}
+
+      vault.hashicorp.com/agent-inject-secret-cert.pem: internal/data/ascend/buildkitd
+      vault.hashicorp.com/agent-inject-perms-cert.pem: "0400"
+      vault.hashicorp.com/agent-inject-template-cert.pem: |
+        {{- with secret "internal/data/ascend/buildkitd" -}}
+        {{ .Data.data.ClientCaCert }}
+        {{- end }}
+
+      vault.hashicorp.com/agent-inject-secret-key.pem: internal/data/ascend/buildkitd
+      vault.hashicorp.com/agent-inject-perms-key.pem: "0400"
+      vault.hashicorp.com/agent-inject-template-key.pem: |
+        {{- with secret "internal/data/ascend/buildkitd" -}}
+        {{ .Data.data.ClientCaKey }}
+        {{- end }}
+
+      vault.hashicorp.com/agent-inject-secret-config.json: internal/data/ascend/buildkitd
+      vault.hashicorp.com/agent-inject-perms-config.json: "0400"
+      vault.hashicorp.com/agent-inject-template-config.json: |
+        {{- with secret "internal/data/ascend/buildkitd" -}}
+        {{ .Data.data.dockerConfig }}
+        {{- end }}
+  spec:
+    # Must be the ServiceAccount bound to the Vault k8s auth role above.
+    serviceAccountName: ascend-gha-runners
+    volumes:
+      - name: token-vol
+        projected:
+          defaultMode: 420
+          sources:
+            - serviceAccountToken:
+                audience: api
+                expirationSeconds: 600
+                path: token
+    # ... your existing runner container spec (image, resources, labels) ...
+
+# ---------------------------------------------------------------------------
+# OPTION B — legacy actions-runner-controller (RunnerDeployment CRD). Put the
+# same annotations under spec.template.metadata.annotations and the token-vol
+# volume under spec.template.spec.volumes of the RunnerDeployment.
+# ---------------------------------------------------------------------------
+#
+# NOTES
+# - Keep `secret-volume-path` and the workflow var BUILDKITD_CERT_DIR in sync.
+#   The runner home is /home/runner (RUNNER_TEMP=/home/runner/_work/_temp), so
+#   /home/runner/.docker is the default; change both together if it differs.
+# - config.json is injected too: build-docker-image.yml currently builds its own
+#   quay.io push config from QUAY_USER/QUAY_PASSWD. If the Vault `dockerConfig`
+#   already carries quay.io (or your push target) auth, you can drop that step
+#   and set DOCKER_CONFIG=${BUILDKITD_CERT_DIR} instead.
