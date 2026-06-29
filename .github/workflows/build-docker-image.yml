@@ -29,6 +29,11 @@ env:
   # repo variable BUILDKITD_ADDR to override.
   BUILDKITD_ADDR: ${{ vars.BUILDKITD_ADDR || 'tcp://buildkitd-service.buildkitd:1234' }}
   BUILDKIT_VERSION: v0.19.0
+  # Where the Vault agent sidecar injects the buildkitd client TLS material
+  # (ca/cert/key.pem) into the runner pod. Must match the sidecar's
+  # `vault.hashicorp.com/secret-volume-path` — see
+  # .github/runner/buildkitd-vault-injection.yaml.
+  BUILDKITD_CERT_DIR: ${{ vars.BUILDKITD_CERT_DIR || '/home/runner/.docker' }}
 
 jobs:
   build-images:
@@ -88,17 +93,24 @@ jobs:
           echo "${INSTALL_DIR}" >> "$GITHUB_PATH"
           "${INSTALL_DIR}/buildctl" --version
 
-      - name: Setup buildkitd TLS certs
+      - name: Verify buildkitd certs
         shell: bash
-        # TODO: add these repo secrets (base64-encoded PEMs) as in
-        # vllm-ascend#10931 / vllm-omni's Vault-injected ca/cert/key.pem.
+        # The buildkitd client TLS certs are injected into the runner pod by the
+        # Vault agent sidecar (NOT decoded from GitHub secrets). Configure the
+        # sidecar on the ARC runner pod template — see
+        # .github/runner/buildkitd-vault-injection.yaml.
         run: |
-          CERT_DIR="${RUNNER_TEMP}/buildkitd-certs"
-          mkdir -p "${CERT_DIR}"
-          echo "${{ secrets.BUILDKITD_CA }}"   | base64 -d > "${CERT_DIR}/ca.pem"
-          echo "${{ secrets.BUILDKITD_CERT }}" | base64 -d > "${CERT_DIR}/cert.pem"
-          echo "${{ secrets.BUILDKITD_KEY }}"  | base64 -d > "${CERT_DIR}/key.pem"
-          echo "CERT_DIR=${CERT_DIR}" >> $GITHUB_ENV
+          set -euo pipefail
+          for f in ca.pem cert.pem key.pem; do
+            if [ ! -s "${BUILDKITD_CERT_DIR}/${f}" ]; then
+              echo "ERROR: ${BUILDKITD_CERT_DIR}/${f} is missing or empty." >&2
+              echo "The Vault agent sidecar must inject buildkitd certs into the runner pod" >&2
+              echo "(see .github/runner/buildkitd-vault-injection.yaml); BUILDKITD_CERT_DIR" >&2
+              echo "must equal the sidecar's secret-volume-path." >&2
+              exit 1
+            fi
+          done
+          echo "CERT_DIR=${BUILDKITD_CERT_DIR}" >> "$GITHUB_ENV"
 
       - name: Setup registry auth
         # Only needed to push (PR builds don't push and pull the public CANN base
