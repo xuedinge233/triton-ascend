@@ -642,7 +642,58 @@ jobs:
           curl -sS --connect-timeout 5 -o /dev/null -w 'obs http=%{http_code}\n' \
             "https://obs.cn-southwest-2.myhuaweicloud.com/" 2>&1 | tail -3
 
+      - name: Download nightly wheel and publish to test OBS
+        id: download-wheel
+        shell: bash
+        env:
+          NIGHTLY_AK: ${{ secrets.NIGHTLY_OBS_AK }}
+          NIGHTLY_SK: ${{ secrets.NIGHTLY_OBS_SK }}
+          TEST_AK: ${{ secrets.OBS_AK }}
+          TEST_SK: ${{ secrets.OBS_SK }}
+          PR_ID: ${{ inputs.pr_id }}
+        run: |
+          set -eu
+
+          # 1. Setup obsutil
+          curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_arm64.tar.gz" -o obsutil.tar.gz
+          gzip -t obsutil.tar.gz || { echo "obsutil.tar.gz is not a valid gzip"; exit 1; }
+          tar xzf obsutil.tar.gz
+          rm -f obsutil.tar.gz
+          mv obsutil_linux_* obsutil
+
+          if [ -z "${NIGHTLY_AK}" ] || [ -z "${NIGHTLY_SK}" ]; then
+            echo "Nightly OBS credentials (NIGHTLY_OBS_AK / NIGHTLY_OBS_SK) are empty."
+            exit 1
+          fi
+
+          # 2. Download latest aarch64 wheel from nightly OBS
+          obsutil/obsutil config -i="${NIGHTLY_AK}" -k="${NIGHTLY_SK}" -e=https://obs.cn-north-4.myhuaweicloud.com
+          NIGHTLY_DIR="obs://ascend-artifcat-packages/pypi/packages/ascend/repos/pypi/nightly/triton-ascend/"
+          obsutil/obsutil ls "${NIGHTLY_DIR}" -d -s -limit=0 \
+            | grep -oE '[^/]+aarch64[^/]+\.whl$' \
+            | sort -r | head -1 > wheel_name.txt
+          WHEEL_NAME=$(cat wheel_name.txt)
+          if [ -z "${WHEEL_NAME}" ]; then
+            echo "No aarch64 wheel found in nightly OBS."
+            exit 1
+          fi
+          echo "Found nightly wheel: ${WHEEL_NAME}"
+          obsutil/obsutil cp "${NIGHTLY_DIR}${WHEEL_NAME}" "./${WHEEL_NAME}"
+
+          # 3. Upload to test OBS
+          if [ -z "${TEST_AK}" ] || [ -z "${TEST_SK}" ]; then
+            echo "Test OBS credentials (OBS_AK / OBS_SK) are empty."
+            exit 1
+          fi
+          obsutil/obsutil config -i="${TEST_AK}" -k="${TEST_SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
+          TEST_DIR="obs://triton-ascend-artifacts/triton-ascend/${PR_ID}/"
+          obsutil/obsutil cp "./${WHEEL_NAME}" "${TEST_DIR}"
+
+          echo "wheel_name=${WHEEL_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Published wheel to ${TEST_DIR}${WHEEL_NAME}"
+
       - name: Start + query + stop smoke test
+        id: smoke-test
         shell: bash
         env:
           BASE_URL:           ${{ secrets.BLUE_YELLOW_BASE_URL }}
@@ -664,7 +715,9 @@ jobs:
           TS=$(date +%Y%m%d%H%M%S)
           BRI="dispatch-${PR_ID}-${TS}"
           BTI="task-${PR_ID}-${TS}"
-          OBS_URL="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}/dummy.whl"
+          WHEEL_NAME="${{ steps.download-wheel.outputs.wheel_name }}"
+          WHEEL_NAME_ENC=$(printf '%s' "${WHEEL_NAME}" | jq -sRr @uri)
+          OBS_URL="https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/triton-ascend/${PR_ID}/${WHEEL_NAME_ENC}"
 
           START_BODY=$(cat <<EOF
           {
