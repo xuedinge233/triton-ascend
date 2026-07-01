@@ -19,13 +19,29 @@ jobs:
   Build-Wheels:
     timeout-minutes: 360
     runs-on: ${{ matrix.config.runs_on }}
+    # Self-hosted heavy-build runners (x86_64 -> linux-amd64-cpu-16,
+    # aarch64 -> linux-aarch64-cpu-16). The build runs directly inside the
+    # manylinux image (cibuildwheel's own base), so there is NO Docker daemon on
+    # the runner: we drive the same build + auditwheel steps cibuildwheel used to
+    # orchestrate. The image ships every CPython under /opt/python/cpXXX-cpXXX.
+    container:
+      # quay.io is unreachable from the cn-southwest-2 cluster. Mirror the pypa
+      # manylinux images into SWR (the registry every other workflow already
+      # pulls from) and set repo variable MANYLINUX_IMAGE_PREFIX to that
+      # namespace, e.g.
+      #   MANYLINUX_IMAGE_PREFIX=swr.cn-southwest-2.myhuaweicloud.com/modelfoundry
+      # Mirror once from a host that can reach both registries:
+      #   skopeo copy docker://quay.io/pypa/manylinux_2_28_x86_64:latest \
+      #     docker://${MANYLINUX_IMAGE_PREFIX}/manylinux_2_28_x86_64:latest
+      #   (repeat for manylinux_2_28_aarch64)
+      image: ${{ vars.MANYLINUX_IMAGE_PREFIX || 'quay.io/pypa' }}/manylinux_2_28_${{ matrix.config.arch }}:latest
 
     strategy:
       fail-fast: false
       matrix:
         config:
-        - {runs_on: 'ubuntu-22.04', arch: 'x86_64'}
-        - {runs_on: 'ubuntu-22.04-arm', arch: 'aarch64'}
+        - {runs_on: 'linux-amd64-cpu-16', arch: 'x86_64'}
+        - {runs_on: 'linux-aarch64-cpu-16', arch: 'aarch64'}
         python: ["cp310", "cp311", "cp312", "cp313"]
         branch:
         - {ref: 'main', tag: 'main', local: 'dev', path: '.'}
@@ -37,21 +53,16 @@ jobs:
 
     steps:
 
-      - name: Prune stale docker containers
-        run: |
-          # If cibuildwheel crashes (or, say, is OOM-killed), it leaves behind a
-          # docker container.  Eventually these consume all the disk space on
-          # this machine.
-          docker container prune -f
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ matrix.branch.ref }}
+          submodules: "true"
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Add git safe directory
+        # The container runs as root while the checkout is owned by the runner
+        # user; without this git refuses to operate ("dubious ownership").
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Cache build dependencies
         uses: actions/cache@v4
@@ -63,55 +74,56 @@ jobs:
           restore-keys: |
             wheels-${{ matrix.config.arch }}-${{ matrix.python }}-
 
-      - name: Build wheels
+      - name: Build wheel
+        shell: bash
         run: |
-          python --version
-          # Make sure cibuildwheel is updated to latest, this will enable latest python builds
-          python3 -m pip install cibuildwheel --upgrade --user
-          # Pass MAX_JOBS=4 because, at time of writing, the VM "only" has 32GB
-          # of RAM and OOMs while building if we give it the default number of
-          # workers (2 * NUM_CPUs).
+          set -euo pipefail
+
+          # The manylinux image ships GCC but not clang/lld/ccache. (Same as the
+          # old CIBW_BEFORE_ALL step.)
+          dnf install -y clang lld ccache
+
+          # Select the target CPython bundled in the manylinux image, e.g.
+          # cp311 -> /opt/python/cp311-cp311/bin/python.
+          PY="/opt/python/${{ matrix.python }}-${{ matrix.python }}/bin/python"
+          "${PY}" --version
+
+          # Cap parallelism: MAX_JOBS = nproc/3 because the build OOMs at the
+          # default (2 * nproc) on these nodes.
           NUM_PROCS=$(( $(nproc) / 3 ))
           if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
 
-          # Pre-create cache dirs on host so cibuildwheel's bind-mount sees them
-          # at /project/.triton-cache and /project/.ccache inside the container.
-          mkdir -p "${{ matrix.branch.path }}/.triton-cache" "${{ matrix.branch.path }}/.ccache"
+          # Cache dirs (persisted by actions/cache). Previously cibuildwheel
+          # bind-mounted these to /project; now the workspace IS the build dir.
+          CACHE_BASE="${GITHUB_WORKSPACE}/${{ matrix.branch.path }}"
+          mkdir -p "${CACHE_BASE}/.triton-cache" "${CACHE_BASE}/.ccache"
 
-          # Wheel version: <base>+devYYYYMMDD. Compute the build date once on
-          # the host (UTC) so all matrix cells agree even if they straddle
-          # midnight. IS_MANYLINUX=TRUE suppresses the +git<hash> append in
-          # setup.py's get_version() since +dev<date> is our local segment.
+          # Wheel version: <base>+<local>YYYYMMDD (UTC, computed once).
+          # IS_MANYLINUX=TRUE suppresses setup.py's +git<hash> append.
           BUILD_DATE=$(date -u +%Y%m%d)
 
-          # required to build Python 3.14 with cibuildwheel 2.23.3
-          # todo: Need to update system Python to 3.11 and update cibuildwheel to latest
+          export MAX_JOBS="${NUM_PROCS}"
+          export TRITON_BUILD_WITH_CLANG_LLD=true
+          export TRITON_BUILD_PROTON=OFF
+          export TRITON_WHEEL_NAME=triton-ascend
+          export TRITON_APPEND_CMAKE_ARGS="-DTRITON_BUILD_UT=OFF"
+          export TRITON_WHEEL_VERSION_SUFFIX="${TRITON_WHEEL_VERSION_SUFFIX:-}+${{ matrix.branch.local }}${BUILD_DATE}"
+          export IS_MANYLINUX=TRUE
+          export TRITON_HOME="${CACHE_BASE}/.triton-cache"
+          export TRITON_BUILD_WITH_CCACHE=true
+          export CCACHE_DIR="${CACHE_BASE}/.ccache"
+          export CCACHE_COMPRESS=true
 
-          export CIBW_ENVIRONMENT="MAX_JOBS=${NUM_PROCS} \
-            TRITON_BUILD_WITH_CLANG_LLD=true \
-            TRITON_BUILD_PROTON=OFF \
-            TRITON_WHEEL_NAME=triton-ascend \
-            TRITON_APPEND_CMAKE_ARGS='-DTRITON_BUILD_UT=OFF' \
-            TRITON_WHEEL_VERSION_SUFFIX=${TRITON_WHEEL_VERSION_SUFFIX:-}+${{ matrix.branch.local }}${BUILD_DATE} \
-            IS_MANYLINUX=TRUE \
-            TRITON_HOME=/project/.triton-cache \
-            TRITON_BUILD_WITH_CCACHE=true \
-            CCACHE_DIR=/project/.ccache \
-            CCACHE_COMPRESS=true"
+          # Build the (non-portable) wheel via PEP 517, then make it portable.
+          rm -rf wheelhouse_raw wheelhouse
+          "${PY}" -m pip wheel "${{ matrix.branch.path }}" --no-deps -w wheelhouse_raw
 
-          # many_linux_2_28 image comes with GCC 12.2.1, but not clang.
-          # With this install, it gets clang 16.0.6.
-          export CIBW_BEFORE_ALL="dnf install clang lld ccache -y"
-
-          if [[ ${{ matrix.config.arch }} == 'x86_64' ]]; then
-            export CIBW_MANYLINUX_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_${{ matrix.config.arch }}:latest"
-          else
-            export CIBW_MANYLINUX_AARCH64_IMAGE="quay.io/pypa/manylinux_2_28_${{ matrix.config.arch }}:latest"
-          fi
-
-          export CIBW_BUILD="${{ matrix.python }}-manylinux_${{ matrix.config.arch }}"
-
-          python3 -m cibuildwheel "${{ matrix.branch.path }}" --output-dir wheelhouse
+          # auditwheel (preinstalled in manylinux) bundles external .so files and
+          # stamps the manylinux_2_28 tag — the portability cibuildwheel gave us.
+          for whl in wheelhouse_raw/*.whl; do
+            auditwheel repair "${whl}" --plat "manylinux_2_28_${{ matrix.config.arch }}" -w wheelhouse
+          done
+          ls -l wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:

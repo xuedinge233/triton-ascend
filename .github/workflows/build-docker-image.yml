@@ -20,12 +20,29 @@ on:
 
 permissions:
   contents: read
-  actions: write
+
+env:
+  # Remote buildkitd daemon. No Docker daemon runs on the runner; buildctl is a
+  # thin TLS client that ships the build to this address (mirrors vllm-omni's
+  # .buildkite/pipeline-npu.yaml and vllm-ascend#10931).
+  # TODO: confirm this address is reachable from triton-ascend's runners, or set
+  # repo variable BUILDKITD_ADDR to override.
+  BUILDKITD_ADDR: ${{ vars.BUILDKITD_ADDR || 'tcp://buildkitd-service.buildkitd:1234' }}
+  BUILDKIT_VERSION: v0.19.0
+  # Where the Vault agent sidecar injects the buildkitd client TLS material
+  # (ca/cert/key.pem) into the runner pod. Must match the sidecar's
+  # `vault.hashicorp.com/secret-volume-path` — see
+  # .github/runner/buildkitd-vault-injection.yaml.
+  BUILDKITD_CERT_DIR: ${{ vars.BUILDKITD_CERT_DIR || '/home/runner/.docker' }}
 
 jobs:
   build-images:
     name: Build ${{ matrix.cann_version }}-${{ matrix.chip_type }}-${{ matrix.os }}-py${{ matrix.python_version }}
-    runs-on: ubuntu-22.04
+    # The image build runs entirely inside the remote buildkitd daemon, so the
+    # runner only needs the buildctl client + network access to the daemon (no
+    # Docker, no buildx, no QEMU). This label can be downsized — nothing builds
+    # locally — it just has to sit inside the cluster that reaches BUILDKITD_ADDR.
+    runs-on: linux-amd64-cpu-16
 
     strategy:
       fail-fast: false
@@ -39,19 +56,78 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Add git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install buildctl
+        shell: bash
+        env:
+          # Override to an internal mirror if github.com is unreliable from the
+          # runner's network (the cn-southwest-2 cluster often is).
+          BUILDKIT_DOWNLOAD_URL: ${{ vars.BUILDKIT_DOWNLOAD_URL }}
+        run: |
+          set -euo pipefail
+          if command -v buildctl >/dev/null 2>&1; then
+            echo "buildctl already installed: $(buildctl --version)"
+            exit 0
+          fi
+          ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+          URL="${BUILDKIT_DOWNLOAD_URL:-https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-${ARCH}.tar.gz}"
+          echo "Downloading buildctl from: ${URL}"
+          for i in 1 2 3 4 5; do
+            if curl -fSL --connect-timeout 30 --retry 5 --retry-all-errors \
+                 --retry-delay 5 -o /tmp/buildkit.tar.gz "${URL}"; then
+              break
+            fi
+            echo "buildctl download attempt ${i} failed; retrying..." >&2
+            [ "${i}" -eq 5 ] && { echo "giving up downloading buildctl" >&2; exit 1; }
+            sleep $(( i * 5 ))
+          done
+          gzip -t /tmp/buildkit.tar.gz
+          # /usr/local/bin isn't writable for the non-root runner user; install
+          # to a writable dir and expose it to later steps via $GITHUB_PATH.
+          INSTALL_DIR="${RUNNER_TEMP}/bin"
+          mkdir -p "${INSTALL_DIR}"
+          tar -xzf /tmp/buildkit.tar.gz -C "${INSTALL_DIR}" --strip-components=1 bin/buildctl
+          rm -f /tmp/buildkit.tar.gz
+          echo "${INSTALL_DIR}" >> "$GITHUB_PATH"
+          "${INSTALL_DIR}/buildctl" --version
 
-      - name: Login to Quay.io
+      - name: Verify buildkitd certs
+        shell: bash
+        # The buildkitd client TLS certs are injected into the runner pod by the
+        # Vault agent sidecar (NOT decoded from GitHub secrets). Configure the
+        # sidecar on the ARC runner pod template — see
+        # .github/runner/buildkitd-vault-injection.yaml.
+        run: |
+          set -euo pipefail
+          for f in ca.pem cert.pem key.pem; do
+            if [ ! -s "${BUILDKITD_CERT_DIR}/${f}" ]; then
+              echo "ERROR: ${BUILDKITD_CERT_DIR}/${f} is missing or empty." >&2
+              echo "The Vault agent sidecar must inject buildkitd certs into the runner pod" >&2
+              echo "(see .github/runner/buildkitd-vault-injection.yaml); BUILDKITD_CERT_DIR" >&2
+              echo "must equal the sidecar's secret-volume-path." >&2
+              exit 1
+            fi
+          done
+          echo "CERT_DIR=${BUILDKITD_CERT_DIR}" >> "$GITHUB_ENV"
+
+      - name: Setup registry auth
+        # Only needed to push (PR builds don't push and pull the public CANN base
+        # anonymously). Written by hand — no docker CLI to run `docker login`.
+        # buildctl forwards these creds to the daemon for the push.
         if: github.event_name == 'push'
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USER }}
-          password: ${{ secrets.QUAY_PASSWD }}
+        shell: bash
+        env:
+          QUAY_USER: ${{ secrets.QUAY_USER }}
+          QUAY_PASSWD: ${{ secrets.QUAY_PASSWD }}
+        run: |
+          set -euo pipefail
+          DOCKER_CONFIG_DIR="${RUNNER_TEMP}/docker-config"
+          mkdir -p "${DOCKER_CONFIG_DIR}"
+          AUTH=$(printf '%s:%s' "${QUAY_USER}" "${QUAY_PASSWD}" | base64 -w0)
+          printf '{"auths":{"quay.io":{"auth":"%s"}}}\n' "${AUTH}" > "${DOCKER_CONFIG_DIR}/config.json"
+          echo "DOCKER_CONFIG=${DOCKER_CONFIG_DIR}" >> $GITHUB_ENV
 
       - name: Generate tags
         id: tags
@@ -65,16 +141,39 @@ jobs:
           echo "tag_latest=${TAG_LATEST}" >> $GITHUB_OUTPUT
 
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' }}
-          tags: |
-            quay.io/ascend/triton:${{ steps.tags.outputs.tag_commit }}
-            quay.io/ascend/triton:${{ steps.tags.outputs.tag_latest }}
-          build-args: |
-            CANN_BASE_IMAGE=quay.io/ascend/cann:${{ steps.tags.outputs.cann_tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        shell: bash
+        # Replaces docker/setup-qemu + setup-buildx + build-push-action. buildctl
+        # builds the multi-arch manifest on the remote daemon and pushes it.
+        # NOTE: multi-platform requires the buildkitd daemon to serve both
+        # linux/amd64 and linux/arm64 (native nodes or qemu/binfmt). If it can't,
+        # split into per-arch builds + a manifest merge.
+        run: |
+          set -euo pipefail
+          IMG_COMMIT="quay.io/ascend/triton:${{ steps.tags.outputs.tag_commit }}"
+          IMG_LATEST="quay.io/ascend/triton:${{ steps.tags.outputs.tag_latest }}"
+
+          if [ "${{ github.event_name }}" = "push" ]; then PUSH=true; else PUSH=false; fi
+
+          # On push, embed an inline cache and seed from the previous :latest so
+          # rebuilds reuse layers (replaces the old type=gha cache).
+          CACHE_ARGS=()
+          if [ "${PUSH}" = "true" ]; then
+            CACHE_ARGS+=(--export-cache type=inline)
+            CACHE_ARGS+=(--import-cache "type=registry,ref=${IMG_LATEST}")
+          fi
+
+          buildctl \
+            --addr="${BUILDKITD_ADDR}" \
+            --tlscacert="${CERT_DIR}/ca.pem" \
+            --tlscert="${CERT_DIR}/cert.pem" \
+            --tlskey="${CERT_DIR}/key.pem" \
+            build \
+            --frontend dockerfile.v0 \
+            --opt platform=linux/amd64,linux/arm64 \
+            --opt build-arg:CANN_BASE_IMAGE=quay.io/ascend/cann:${{ steps.tags.outputs.cann_tag }} \
+            --local context=. \
+            --local dockerfile=docker \
+            --opt filename=Dockerfile \
+            --output "type=image,\"name=${IMG_COMMIT},${IMG_LATEST}\",push=${PUSH}" \
+            ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} \
+            --progress=plain

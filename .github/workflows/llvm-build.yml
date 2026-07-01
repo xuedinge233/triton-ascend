@@ -17,6 +17,18 @@ on:
 
 env:
   SCCACHE_DIR: ${{ github.workspace }}/sccache
+  # Remote buildkitd daemon. No Docker daemon runs on the runner; buildctl is a
+  # thin TLS client that ships the build to this address (mirrors vllm-omni's
+  # .buildkite/pipeline-npu.yaml and vllm-ascend#10931).
+  # TODO: confirm this address is reachable from triton-ascend's runners, or set
+  # repo variable BUILDKITD_ADDR to override.
+  BUILDKITD_ADDR: ${{ vars.BUILDKITD_ADDR || 'tcp://buildkitd-service.buildkitd:1234' }}
+  BUILDKIT_VERSION: v0.19.0
+  # Where the Vault agent sidecar injects the buildkitd client TLS material
+  # (ca/cert/key.pem) into the runner pod. Must match the sidecar's
+  # `vault.hashicorp.com/secret-volume-path` — see
+  # .github/runner/buildkitd-vault-injection.yaml.
+  BUILDKITD_CERT_DIR: ${{ vars.BUILDKITD_CERT_DIR || '/home/runner/.docker' }}
 
 permissions:
   contents: read
@@ -27,17 +39,22 @@ jobs:
   build:
     name: Build on ${{ matrix.config.runner }}
     runs-on: ${{ matrix.config.runs_on }}
+    # The LLVM compile happens entirely inside the remote buildkitd daemon, so
+    # the runner only needs the buildctl client + network access to the daemon
+    # (no Docker, no `container:`). These labels can be downsized from cpu-16
+    # since nothing compiles locally anymore — they just need to sit inside the
+    # cluster that can resolve/reach BUILDKITD_ADDR.
     timeout-minutes: 240
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         config:
-        - {runner: 'Ubuntu 22.04', runs_on: 'ubuntu-22.04', target-os: 'ubuntu', arch: 'x64'}
-        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'ubuntu', arch: 'arm64'}
-        - {runner: 'CentOS 7', runs_on: 'ubuntu-22.04', target-os: 'centos', arch: 'x64'}
-        - {runner: 'AlmaLinux 8', runs_on: 'ubuntu-22.04', target-os: 'almalinux', arch: 'x64'}
-        - {runner: 'AlmaLinux 8 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'almalinux', arch: 'arm64'}
+        - {runner: 'Ubuntu 22.04',       runs_on: 'linux-amd64-cpu-16',   target-os: 'ubuntu',    arch: 'x64',   platform: 'linux/amd64', dockerfile: 'ubuntu.Dockerfile'}
+        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'linux-aarch64-cpu-16', target-os: 'ubuntu',    arch: 'arm64', platform: 'linux/arm64', dockerfile: 'ubuntu.Dockerfile'}
+        - {runner: 'CentOS 7',           runs_on: 'linux-amd64-cpu-16',   target-os: 'centos',    arch: 'x64',   platform: 'linux/amd64', dockerfile: 'centos.Dockerfile'}
+        - {runner: 'AlmaLinux 8',        runs_on: 'linux-amd64-cpu-16',   target-os: 'almalinux', arch: 'x64',   platform: 'linux/amd64', dockerfile: 'almalinux.Dockerfile'}
+        - {runner: 'AlmaLinux 8 ARM64',  runs_on: 'linux-aarch64-cpu-16', target-os: 'almalinux', arch: 'arm64', platform: 'linux/arm64', dockerfile: 'almalinux.Dockerfile'}
 
     steps:
 
@@ -86,6 +103,20 @@ jobs:
         repository: llvm/llvm-project
         path: llvm-project
         ref: ${{ env.llvm_commit_hash }}
+        # The monorepo carries clang/flang/libc/libcxx/compiler-rt/... which we
+        # never build. blob:none fetches no file contents up front, and the cone
+        # sparse-checkout materializes only the subtrees we compile, so git
+        # downloads blobs for just these paths. Keep `mlir` here: fad3272.patch
+        # only touches mlir/, and any future patch's paths must stay in this set
+        # or `git apply` will fail.
+        filter: blob:none
+        sparse-checkout-cone-mode: true
+        sparse-checkout: |
+          llvm
+          mlir
+          lld
+          cmake
+          third-party
 
     - name: Apply LLVM patches
       shell: bash
@@ -103,18 +134,6 @@ jobs:
           cd ..
         fi
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.11
-
-    - name: Install Prerequisites
-      shell: bash
-      run: |
-        python3 -m pip install cmake ninja sccache
-        mkdir -p ${{ env.SCCACHE_DIR }}
-        rm -rf ${{ env.SCCACHE_DIR }}/*
-
     - name: Enable Cache
       uses: actions/cache@v4
       with:
@@ -122,79 +141,108 @@ jobs:
         key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
         restore-keys: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-
 
-    - name: Configure, Build, and Install LLVM (Ubuntu)
-      if: matrix.config.target-os == 'ubuntu'
-      run: >
-        python3 -m pip install -r llvm-project/mlir/python/requirements.txt
-
-        cmake -GNinja -Bllvm-project/build
-        -DCMAKE_BUILD_TYPE=Release
-        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-        -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-        -DCMAKE_INSTALL_PREFIX="${{ env.llvm_install_dir }}"
-        -DCMAKE_LINKER=lld
-        -DLLVM_BUILD_UTILS=ON
-        -DLLVM_BUILD_TOOLS=ON
-        -DLLVM_ENABLE_ASSERTIONS=ON
-        -DMLIR_ENABLE_BINDINGS_PYTHON=ON
-        -DLLVM_ENABLE_PROJECTS="mlir;lld"
-        -DLLVM_INSTALL_UTILS=ON
-        -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
-        -DLLVM_ENABLE_TERMINFO=OFF
-        -DLLVM_ENABLE_ZSTD=OFF
-        llvm-project/llvm
-
-        ninja -C llvm-project/build install
-
-        tar czf "${{ env.llvm_install_dir }}.tar.gz" "${{ env.llvm_install_dir }}"
-
-    - name: Configure, Build, Test, and Install LLVM (CentOS)
-      if: matrix.config.target-os == 'centos'
+    - name: Prepare build context
+      shell: bash
       run: |
-        # if this step crashes, it can leave behind a stale docker container
-        docker container prune -f
-        docker rmi -f $(docker images -q) 2>/dev/null || true
+        # The Dockerfiles do `COPY sccache /sccache`, so the dir must exist in
+        # the context even on a cache miss.
+        mkdir -p "${{ env.SCCACHE_DIR }}"
+        # Trim what `buildctl --local context=.` uploads to the daemon. The
+        # context only needs llvm-project/ (source) and sccache/; the Dockerfile
+        # is sent separately via --local dockerfile. .git dirs and the triton
+        # checkout are dead weight over the wire.
+        printf '%s\n' '**/.git' 'llvm-build' 'out' '*.tar.gz' > .dockerignore
 
-        docker build --tag llvm-build --build-arg llvm_dir=llvm-project \
-          -f llvm-build/.github/workflows/llvm-build/centos.Dockerfile .
+    - name: Install buildctl
+      shell: bash
+      env:
+        # Override to an internal mirror if github.com is unreliable from the
+        # runner's network (the cn-southwest-2 cluster often is — this is the
+        # `curl (56)` failure). Should point at a buildkit-*.linux-<arch>.tar.gz.
+        BUILDKIT_DOWNLOAD_URL: ${{ vars.BUILDKIT_DOWNLOAD_URL }}
+      run: |
+        set -euo pipefail
+        if command -v buildctl >/dev/null 2>&1; then
+          echo "buildctl already installed: $(buildctl --version)"
+          exit 0
+        fi
+        ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+        URL="${BUILDKIT_DOWNLOAD_URL:-https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-${ARCH}.tar.gz}"
+        echo "Downloading buildctl from: ${URL}"
+        # Download to a file (never pipe into tar) so a truncated transfer fails
+        # loudly. -f errors on HTTP failures; --retry/--retry-all-errors recovers
+        # transient network drops like the curl(56) recv error.
+        for i in 1 2 3 4 5; do
+          if curl -fSL --connect-timeout 30 --retry 5 --retry-all-errors \
+               --retry-delay 5 -o /tmp/buildkit.tar.gz "${URL}"; then
+            break
+          fi
+          echo "buildctl download attempt ${i} failed; retrying..." >&2
+          [ "${i}" -eq 5 ] && { echo "giving up downloading buildctl" >&2; exit 1; }
+          sleep $(( i * 5 ))
+        done
+        gzip -t /tmp/buildkit.tar.gz   # integrity gate before extracting
+        # /usr/local/bin isn't writable for the non-root runner user; install to
+        # a writable dir and expose it to later steps via $GITHUB_PATH.
+        INSTALL_DIR="${RUNNER_TEMP}/bin"
+        mkdir -p "${INSTALL_DIR}"
+        tar -xzf /tmp/buildkit.tar.gz -C "${INSTALL_DIR}" --strip-components=1 bin/buildctl
+        rm -f /tmp/buildkit.tar.gz
+        echo "${INSTALL_DIR}" >> "$GITHUB_PATH"
+        "${INSTALL_DIR}/buildctl" --version
 
-        # Create temporary container to copy cache and installed artifacts.
-        CONTAINER_ID=$(docker create llvm-build)
-        docker cp "${CONTAINER_ID}:/install" "${{ env.llvm_install_dir }}"
+    - name: Verify buildkitd certs
+      shell: bash
+      # The buildkitd client TLS certs are injected into the runner pod by the
+      # Vault agent sidecar (NOT decoded from GitHub secrets). Configure the
+      # sidecar on the ARC runner pod template — see
+      # .github/runner/buildkitd-vault-injection.yaml.
+      run: |
+        set -euo pipefail
+        for f in ca.pem cert.pem key.pem; do
+          if [ ! -s "${BUILDKITD_CERT_DIR}/${f}" ]; then
+            echo "ERROR: ${BUILDKITD_CERT_DIR}/${f} is missing or empty." >&2
+            echo "The Vault agent sidecar must inject buildkitd certs into the runner pod" >&2
+            echo "(see .github/runner/buildkitd-vault-injection.yaml); BUILDKITD_CERT_DIR" >&2
+            echo "must equal the sidecar's secret-volume-path." >&2
+            exit 1
+          fi
+        done
+        echo "CERT_DIR=${BUILDKITD_CERT_DIR}" >> "$GITHUB_ENV"
+
+    - name: Build LLVM via buildkitd and export artifacts
+      shell: bash
+      # Replaces the old `docker build` + `docker create` + `docker cp` dance.
+      # buildctl builds the per-OS Dockerfile on the remote daemon and exports
+      # the `export` stage (install + warmed sccache) to ./out — no local Docker.
+      run: |
+        rm -rf out
+        buildctl \
+          --addr="${BUILDKITD_ADDR}" \
+          --tlscacert="${CERT_DIR}/ca.pem" \
+          --tlscert="${CERT_DIR}/cert.pem" \
+          --tlskey="${CERT_DIR}/key.pem" \
+          build \
+          --frontend dockerfile.v0 \
+          --opt platform=${{ matrix.config.platform }} \
+          --opt build-arg:llvm_dir=llvm-project \
+          --opt target=export \
+          --local context=. \
+          --local dockerfile=llvm-build/.github/workflows/llvm-build \
+          --opt filename=${{ matrix.config.dockerfile }} \
+          --output type=local,dest=out \
+          --progress=plain
+
+    - name: Package artifacts and refresh sccache
+      shell: bash
+      run: |
+        # Export stage placed /install and /sccache at out/install, out/sccache.
+        rm -rf "${{ env.llvm_install_dir }}"
+        mv out/install "${{ env.llvm_install_dir }}"
         tar czf "${{ env.llvm_install_dir }}.tar.gz" "${{ env.llvm_install_dir }}"
-
-        # We remove the existing directory, otherwise docker will
-        # create a subdirectory inside the existing directory.
+        # Persist the warmed sccache to the path actions/cache saves on post.
         rm -rf "${{ env.SCCACHE_DIR }}"
-        docker cp "${CONTAINER_ID}:/sccache" "${{ env.SCCACHE_DIR }}"
-        sudo chown -R "$(id -u -n):$(id -g -n)" "${{ env.SCCACHE_DIR }}"
-
-        docker rm "${CONTAINER_ID}"
-
-    - name: Configure, Build, Test, and Install LLVM (AlmaLinux)
-      if: matrix.config.target-os == 'almalinux'
-      run: |
-        # if this step crashes, it can leave behind a stale docker container
-        docker container prune -f
-        docker rmi -f $(docker images -q) 2>/dev/null || true
-
-        docker build --tag llvm-build --build-arg llvm_dir=llvm-project \
-          -f llvm-build/.github/workflows/llvm-build/almalinux.Dockerfile .
-
-        # Create temporary container to copy cache and installed artifacts.
-        CONTAINER_ID=$(docker create llvm-build)
-
-        # We remove the existing directories, otherwise docker cp will
-        # create a subdirectory inside the existing directory.
-        rm -rf "${{ env.SCCACHE_DIR }}" "${{ env.llvm_install_dir }}"
-
-        docker cp "${CONTAINER_ID}:/install" "${{ env.llvm_install_dir }}"
-        tar czf "${{ env.llvm_install_dir }}.tar.gz" "${{ env.llvm_install_dir }}"
-
-        docker cp "${CONTAINER_ID}:/sccache" "${{ env.SCCACHE_DIR }}"
-        sudo chown -R "$(id -u -n):$(id -g -n)" "${{ env.SCCACHE_DIR }}"
-
-        docker rm "${CONTAINER_ID}"
+        mv out/sccache "${{ env.SCCACHE_DIR }}"
 
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
@@ -224,6 +272,3 @@ jobs:
 
         obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
         obsutil/obsutil cp -u "${{ env.llvm_install_dir }}.tar.gz" obs://triton-ascend-artifacts/llvm-builds/
-
-    - name: Dump Sccache Statistics
-      run: sccache --show-stats
