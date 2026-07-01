@@ -1,0 +1,219 @@
+name: Docs RTD Preview
+
+# Reacts to a successful docs-spec-check run by:
+#   1. Creating a GitHub Check Run to track RTD build status (visible in PR checklist)
+#   2. Triggering a Read the Docs build via API token
+#   3. Polling RTD until the build finishes, updating the Check Run accordingly
+#
+# This merges the previous two-workflow design (trigger + status polling) into a
+# single workflow so the poller doesn’t start until the build is actually kicked off.
+#
+# We use `workflow_run` (not `pull_request`) so the workflow runs in the base-repo
+# security context where the RTD_API_TOKEN secret is available — fork PRs cannot
+# access repo secrets under `pull_request`.
+
+on:
+  workflow_run:
+    workflows: ["Docs Specifications Check"]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: write
+
+jobs:
+  rtd-preview:
+    name: RTD Preview
+    # Only run for PR gate runs that actually passed.
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      RTD_PROJECT: triton-ascend
+      MAX_WAIT_MIN: '25'
+      POLL_INTERVAL_SEC: '30'
+    steps:
+      - name: Trigger RTD build & monitor
+        uses: actions/github-script@v7
+        env:
+          RTD_API_TOKEN: ${{ secrets.RTD_API_TOKEN }}
+        with:
+          script: |
+            const project    = process.env.RTD_PROJECT;
+            const token      = process.env.RTD_API_TOKEN;
+            const maxWaitMin = parseInt(process.env.MAX_WAIT_MIN, 10);
+            const pollSec    = parseInt(process.env.POLL_INTERVAL_SEC, 10);
+
+            const headSha  = context.payload.workflow_run.head_sha;
+            const prList   = context.payload.workflow_run.pull_requests;
+            const prNumber = (prList && prList[0]) ? prList[0].number : null;
+
+            if (!prNumber) {
+              core.info('No PR number found in workflow_run payload; skipping.');
+              return;
+            }
+
+            const previewUrl = `https://${project}--${prNumber}.org.readthedocs.build/`;
+            const checkName  = 'RTD Preview';
+
+            // ── helpers ──────────────────────────────────────────────
+
+            async function updateCheckRun(status, conclusion, title, summary) {
+              const params = {
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                check_run_id: checkRunId,
+                status,
+                output: { title, summary },
+              };
+              if (conclusion) params.conclusion = conclusion;
+              if (status === 'completed') {
+                params.completed_at = new Date().toISOString();
+              }
+              await github.rest.checks.update(params);
+            }
+
+            // ── Step 1: Create Check Run ────────────────────────────
+
+            const checkRun = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              name:  checkName,
+              head_sha: headSha,
+              status: 'queued',
+              started_at: new Date().toISOString(),
+              output: {
+                title:   'RTD preview build queued',
+                summary: `Waiting to trigger RTD build for PR #${prNumber}…`,
+              },
+            });
+
+            const checkRunId = checkRun.data.id;
+            core.info(`Created check run #${checkRunId}`);
+
+            // ── Step 2: Trigger RTD build ───────────────────────────
+
+            if (!token) {
+              await updateCheckRun(
+                'completed', 'failure',
+                'RTD build not triggered',
+                '`RTD_API_TOKEN` secret is not configured on this repo.'
+              );
+              core.setFailed('RTD_API_TOKEN secret is not set.');
+              return;
+            }
+
+            await updateCheckRun(
+              'in_progress', null,
+              'Triggering RTD build…',
+              `Kicking off RTD build for PR #${prNumber}…`
+            );
+
+            try {
+              const triggerUrl = `https://readthedocs.org/api/v3/projects/${project}/versions/external-${prNumber}/builds/`;
+              const resp = await fetch(triggerUrl, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Token ${token}`,
+                  'Content-Type': 'application/json',
+                },
+              });
+              if (!resp.ok) {
+                const body = await resp.text();
+                throw new Error(`RTD trigger API ${resp.status}: ${body}`);
+              }
+              core.info('RTD build triggered successfully.');
+            } catch (e) {
+              await updateCheckRun(
+                'completed', 'failure',
+                'RTD trigger failed',
+                `Failed to trigger RTD build: ${e.message}`
+              );
+              core.setFailed(`RTD trigger error: ${e.message}`);
+              return;
+            }
+
+            // ── Step 3: Poll RTD until completion ───────────────────
+
+            await updateCheckRun(
+              'in_progress', null,
+              'RTD build in progress…',
+              `RTD build is running for PR #${prNumber}.  \n[Preview link](${previewUrl})`
+            );
+
+            const buildsUrl   = `https://app.readthedocs.org/api/v3/projects/${project}/builds/?commit=${headSha}`;
+            const authHeaders = { headers: { Authorization: `Token ${token}` } };
+            const deadline    = Date.now() + maxWaitMin * 60 * 1000;
+            const sleep       = ms => new Promise(r => setTimeout(r, ms));
+
+            let lastReportedState = '';
+
+            while (Date.now() < deadline) {
+              let build = null;
+              try {
+                const bResp = await fetch(buildsUrl, authHeaders);
+                if (bResp.ok) {
+                  const bData = await bResp.json();
+                  build = (bData.results || [])[0] || null;
+                } else {
+                  core.warning(`RTD builds API returned ${bResp.status}`);
+                }
+              } catch (e) {
+                core.info(`Builds fetch failed: ${e.message}; retrying.`);
+              }
+
+              if (!build) {
+                await sleep(pollSec * 1000);
+                continue;
+              }
+
+              const state = (build.state && build.state.code) || 'unknown';
+
+              if (state === 'finished') {
+                if (build.success) {
+                  await updateCheckRun(
+                    'completed', 'success',
+                    'RTD preview ready',
+                    `✅ RTD build succeeded.  \n[Preview link](${previewUrl})`
+                  );
+                } else {
+                  await updateCheckRun(
+                    'completed', 'failure',
+                    'RTD build failed',
+                    `❌ RTD build failed.  \n[Build details](${previewUrl})`
+                  );
+                }
+                return;
+              }
+
+              if (state === 'cancelled') {
+                await updateCheckRun(
+                  'completed', 'failure',
+                  'RTD build cancelled',
+                  'The RTD build was cancelled.'
+                );
+                return;
+              }
+
+              // Update the check run when the RTD state changes
+              if (state !== lastReportedState) {
+                await updateCheckRun(
+                  'in_progress', null,
+                  `RTD build: ${state}`,
+                  `RTD build status: \`${state}\`.  \n[Preview link](${previewUrl})`
+                );
+                lastReportedState = state;
+              }
+
+              await sleep(pollSec * 1000);
+            }
+
+            // ── Timeout ─────────────────────────────────────────────
+
+            await updateCheckRun(
+              'completed', 'failure',
+              'RTD build timed out',
+              `Build did not complete within ${maxWaitMin} minutes.  \n[Preview link](${previewUrl})`
+            );
+            core.setFailed(`RTD build did not finish within ${maxWaitMin} minutes.`);

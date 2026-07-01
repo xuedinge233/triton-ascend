@@ -1,15 +1,20 @@
 name: Docs Specifications Check
 
+# ── Docs CI pipeline ──────────────────────────────────────────────────
+#  1. docs-spec-check.yml   (this file)  – code / spec gate
+#  2. docs-rtd-preview.yml               – trigger RTD + monitor → Check Run
+#
+#  Only changes under docs/ trigger the pipeline (plus self-validation of the
+#  gate's own definition).  docs-rtd-preview.yml listens on workflow_run for
+#  this workflow, so if you rename this workflow, update the `workflows:`
+#  filter there as well.
+
 on:
   pull_request:
-    # The config (.github/docs-ci/config.json) checks any changed
-    # .md / .mdx / _toc.yaml, so trigger on those rather than only docs/.
-    # Also run when the gate's own definition (workflow / config / checker)
-    # changes, so those changes get self-validated.
     paths:
-      - '**/*.md'
-      - '**/*.mdx'
-      - '**/_toc.yaml'
+      - 'docs/**/*.md'
+      - 'docs/**/*.mdx'
+      - 'docs/**/_toc.yaml'
       - '.github/workflows/docs-spec-check.yml'
       - '.github/docs-ci/**'
   # Manual + nightly full scans (checkAll) to surface errors in existing docs
@@ -136,3 +141,4 @@ jobs:
               cat output.md
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
