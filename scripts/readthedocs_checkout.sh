@@ -2,15 +2,21 @@
 # Read the Docs post_checkout hook.
 #
 # 1. Maps the project's RTD language code to a docs/<lang>/ source tree.
-# 2. Cancels PR-preview builds that don't touch this language's docs.
-# 3. Creates docs/active -> docs/<lang>/ so the declarative sphinx/python
-#    blocks in .readthedocs.yaml don't need to know which language to build.
+# 2. Cancels PR-preview builds that don't touch docs/ (safety net — the
+#    GitHub Actions pipeline normally prevents this, but RTD could be
+#    triggered outside of it).
+# 3. Creates docs/active -> docs/<lang>/.
 #
-# Kept as a separate script (rather than inline in .readthedocs.yaml) because
-# RTD's command runner has been observed to silently abort on multi-line
-# YAML scalars with case/if/$()-style constructs.
+# PR-preview gating (docs-spec check, changed-files filter, RTD trigger +
+# status reporting) is handled by the GitHub Actions pipeline:
+#   .github/workflows/docs-spec-check.yml
+#   .github/workflows/docs-rtd-preview.yml
+#
+# RTD treats exit code 183 as "cancel build" (not fail).
 
 set -eu
+
+# ── 1. Language mapping ────────────────────────────────────────────────────
 
 case "$READTHEDOCS_LANGUAGE" in
   en)          lang="en" ;;
@@ -22,8 +28,11 @@ case "$READTHEDOCS_LANGUAGE" in
 esac
 echo "Building docs/${lang}/ for project ${READTHEDOCS_PROJECT} (${READTHEDOCS_LANGUAGE})"
 
-# PR-preview gate. RTD treats exit code 183 as "cancel build" (not fail).
+# ── 2. PR-preview: skip if no docs/ changes ───────────────────────────────
+
 if [ "${READTHEDOCS_VERSION_TYPE:-}" = "external" ]; then
+  echo "PR preview build detected."
+
   git fetch --depth=100 origin main:refs/remotes/origin/main 2>/dev/null || true
   base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse origin/main 2>/dev/null || true)"
   if [ -n "$base" ] && git diff --quiet "$base" HEAD -- \
@@ -31,7 +40,10 @@ if [ "${READTHEDOCS_VERSION_TYPE:-}" = "external" ]; then
     echo "No relevant changes in this PR; cancelling build."
     exit 183
   fi
+  echo "docs/ changes detected, proceeding with build."
 fi
+
+# ── 3. Symlink docs/active ─────────────────────────────────────────────────
 
 ln -sfn "$lang" docs/active
 ls -la docs/active

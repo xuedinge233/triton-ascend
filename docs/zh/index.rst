@@ -44,6 +44,13 @@ Triton Ascend
     :caption: 典型算子样例
 
     examples/index.md
+    examples/01_vector_add_example.md
+    examples/02_fused_softmax_example.md
+    examples/03_layer_norm_example.md
+    examples/04_fused_attention_example.md
+    examples/05_matrix_multiplication_example.md
+    examples/06_autotune_example.md
+    examples/07_accuracy_comparison_example.md
 
 .. toctree::
     :maxdepth: 2
@@ -53,6 +60,8 @@ Triton Ascend
     max_autotune_guide.md
     debug_guide/debugging.md
     debug_guide/profiling.md
+    debug_guide/precision.md
+    debug_guide/ub_overflow.md
 
 .. toctree::
     :maxdepth: 3
@@ -96,8 +105,10 @@ Triton Ascend
     :maxdepth: 1
     :caption: 社区治理
 
+    community/CODE_OF_CONDUCT_zh.md
     community/GOVERNANCE_zh.md
     community/community_technical_meeting.md
     community/release_policy.md
     community/MAINTAINERS.md
     community/contributor.md
+    community/SECURITYNOTE_zh.md

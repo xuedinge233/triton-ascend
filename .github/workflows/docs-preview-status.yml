@@ -6,9 +6,10 @@ name: Docs preview status
 #
 # Requires repo secret: RTD_TOKEN (RTD account -> API tokens).
 #
-# Runs via pull_request_target so secrets are available and statuses can be
-# written. We never check out PR code — only read PR metadata and query the
-# RTD API — so this is safe for fork PRs.
+# Runs via pull_request_target so the built-in GITHUB_TOKEN can write commit
+# statuses (a fork's pull_request token is read-only). We never check out PR
+# code — only read PR metadata and query the RTD API — so this is safe for
+# fork PRs.
 
 on:
   pull_request_target:
@@ -26,7 +27,7 @@ jobs:
   poll:
     runs-on: ubuntu-latest
     env:
-      RTD_PROJECT: triton-ascend-docs-cn
+      RTD_PROJECT: triton-ascend
       MAX_WAIT_MIN: '20'
       POLL_INTERVAL_SEC: '30'
     steps:
@@ -43,10 +44,12 @@ jobs:
             const pr  = context.payload.pull_request.number;
             const sha = context.payload.pull_request.head.sha;
             const ctx = 'docs/readthedocs';
-            // Best-effort default; replaced with the canonical urls.documentation
-            // once the RTD version exists. External (PR) preview domains live
-            // under <slug>--<pr>.org.readthedocs.build for community RTD.
-            let previewUrl = `https://${project}--${pr}.org.readthedocs.build/`;
+            // External (PR) preview domain for community RTD. The bare root
+            // 302-redirects to the project's default language/version path
+            // (e.g. /zh-cn/<pr>/). RTD does NOT expose external versions at the
+            // /versions/<pr>/ detail route, so we construct this rather than
+            // reading urls.documentation from the API.
+            const previewUrl = `https://${project}--${pr}.org.readthedocs.build/`;
 
             async function setStatus(state, description) {
               await github.rest.repos.createCommitStatus({
@@ -70,62 +73,49 @@ jobs:
             }
 
             const authHeaders = { headers: { Authorization: `Token ${token}` } };
-            const versionUrl = `https://app.readthedocs.org/api/v3/projects/${project}/versions/${pr}/`;
-            const buildsUrl  = `https://app.readthedocs.org/api/v3/projects/${project}/versions/${pr}/builds/`;
+            // Builds for this PR's head commit, newest first.
+            const buildsUrl  = `https://app.readthedocs.org/api/v3/projects/${project}/builds/?commit=${sha}`;
             const deadline = Date.now() + maxWaitMin * 60 * 1000;
             const sleep = ms => new Promise(r => setTimeout(r, ms));
 
             let lastReportedState = 'pending';
 
             while (Date.now() < deadline) {
-              // 1) Version detail — confirms the PR version exists and gives the
-              //    canonical preview URL. The version object carries NO build
-              //    info, so build state must come from the builds endpoint below.
-              let version;
-              try {
-                const resp = await fetch(versionUrl, authHeaders);
-                if (resp.status === 404) {
-                  // RTD hasn't received the PR webhook yet — keep waiting.
-                  await sleep(pollSec * 1000);
-                  continue;
-                }
-                if (!resp.ok) {
-                  core.warning(`RTD API ${resp.status}: ${await resp.text()}`);
-                  await sleep(pollSec * 1000);
-                  continue;
-                }
-                version = await resp.json();
-              } catch (e) {
-                core.info(`Fetch failed: ${e.message}; retrying.`);
-                await sleep(pollSec * 1000);
-                continue;
-              }
-
-              if (version.urls && version.urls.documentation) {
-                previewUrl = version.urls.documentation;
-              }
-
-              // 2) Latest build for this version. The build's state is a nested
-              //    object: {"code": "finished", "name": "Finished"}.
-              let build = {};
+              // Authoritative build state for this PR. The build state is a
+              // nested object: {"code": "finished", "name": "Finished"}.
+              let build = null;
               try {
                 const bResp = await fetch(buildsUrl, authHeaders);
                 if (bResp.ok) {
                   const bData = await bResp.json();
-                  build = (bData.results || [])[0] || {};
+                  build = (bData.results || [])[0] || null;
+                } else {
+                  core.warning(`RTD builds API ${bResp.status}: ${await bResp.text()}`);
                 }
               } catch (e) {
                 core.info(`Builds fetch failed: ${e.message}; retrying.`);
               }
 
+              if (!build) {
+                // RTD hasn't registered a build for this PR yet — keep waiting.
+                await sleep(pollSec * 1000);
+                continue;
+              }
+
               const state = (build.state && build.state.code) || 'unknown';
 
+              // Terminal states: finished (success flag decides) and cancelled.
+              // Stop polling on either, otherwise we hang until the deadline.
               if (state === 'finished') {
                 if (build.success) {
                   await setStatus('success', 'Preview built successfully');
                 } else {
                   await setStatus('failure', 'Read the Docs build failed');
                 }
+                return;
+              }
+              if (state === 'cancelled') {
+                await setStatus('failure', 'Read the Docs build was cancelled');
                 return;
               }
 
