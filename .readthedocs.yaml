@@ -2,8 +2,8 @@
 # See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
 #
 # Single config drives both language projects. The project's Admin -> Settings
-# -> Language sets READTHEDOCS_LANGUAGE; .readthedocs/post_checkout.sh maps it
-# to docs/<lang>/ via a docs/active symlink that the declarative sphinx/python
+# -> Language sets READTHEDOCS_LANGUAGE; readthedocs_checkout.sh maps it to
+# docs/<lang>/ via a docs/active symlink that the declarative sphinx/python
 # blocks below read from. No user-defined env vars required.
 
 version: 2
