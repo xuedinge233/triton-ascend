@@ -30,7 +30,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
-      RTD_PROJECT: triton-ascend
+      RTD_PROJECT: test-triton-ascend-1
       MAX_WAIT_MIN: '25'
       POLL_INTERVAL_SEC: '30'
     steps:
@@ -54,6 +54,7 @@ jobs:
               return;
             }
 
+            const apiBase  = 'https://readthedocs.org/api/v3';
             const previewUrl = `https://${project}--${prNumber}.org.readthedocs.build/`;
             const checkName  = 'RTD Preview';
 
@@ -92,7 +93,7 @@ jobs:
             const checkRunId = checkRun.data.id;
             core.info(`Created check run #${checkRunId}`);
 
-            // ── Step 2: Trigger RTD build ───────────────────────────
+            // ── Step 2: Validate token ──────────────────────────────
 
             if (!token) {
               await updateCheckRun(
@@ -104,6 +105,41 @@ jobs:
               return;
             }
 
+            const authHeaders = { headers: { Authorization: `Token ${token}` } };
+
+            // ── Step 3: Check version exists before triggering ────────
+
+            const versionSlug = `external-${prNumber}`;
+            const versionUrl  = `${apiBase}/projects/${project}/versions/${versionSlug}/`;
+
+            core.info(`Checking RTD version: ${versionUrl}`);
+            let versionExists = false;
+            try {
+              const vResp = await fetch(versionUrl, authHeaders);
+              if (vResp.ok) {
+                versionExists = true;
+                core.info(`Version ${versionSlug} found.`);
+              } else {
+                core.warning(`Version check returned ${vResp.status}: ${await vResp.text()}`);
+              }
+            } catch (e) {
+              core.warning(`Version check failed: ${e.message}`);
+            }
+
+            if (!versionExists) {
+              await updateCheckRun(
+                'completed', 'failure',
+                'RTD version not found',
+                `Version \`${versionSlug}\` does not exist in RTD project \`${project}\`.\n\n` +
+                `Make sure "Build pull requests" is enabled in RTD settings and the PR has been synced.\n` +
+                `RTD needs to receive a webhook to create the external version — try pushing a new commit.`
+              );
+              core.setFailed(`RTD version ${versionSlug} not found in project ${project}.`);
+              return;
+            }
+
+            // ── Step 4: Trigger RTD build ───────────────────────────
+
             await updateCheckRun(
               'in_progress', null,
               'Triggering RTD build…',
@@ -111,7 +147,7 @@ jobs:
             );
 
             try {
-              const triggerUrl = `https://readthedocs.org/api/v3/projects/${project}/versions/external-${prNumber}/builds/`;
+              const triggerUrl = `${apiBase}/projects/${project}/versions/${versionSlug}/builds/`;
               const resp = await fetch(triggerUrl, {
                 method: 'POST',
                 headers: {
@@ -134,7 +170,7 @@ jobs:
               return;
             }
 
-            // ── Step 3: Poll RTD until completion ───────────────────
+            // ── Step 5: Poll RTD until completion ───────────────────
 
             await updateCheckRun(
               'in_progress', null,
@@ -142,9 +178,8 @@ jobs:
               `RTD build is running for PR #${prNumber}.  \n[Preview link](${previewUrl})`
             );
 
-            const buildsUrl   = `https://app.readthedocs.org/api/v3/projects/${project}/builds/?commit=${headSha}`;
-            const authHeaders = { headers: { Authorization: `Token ${token}` } };
-            const deadline    = Date.now() + maxWaitMin * 60 * 1000;
+            const buildsUrl = `${apiBase}/projects/${project}/builds/?commit=${headSha}`;
+            const deadline  = Date.now() + maxWaitMin * 60 * 1000;
             const sleep       = ms => new Promise(r => setTimeout(r, ms));
 
             let lastReportedState = '';
