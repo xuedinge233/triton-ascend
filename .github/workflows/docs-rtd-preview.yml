@@ -28,7 +28,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
-      RTD_PROJECT: triton-ascend
+      RTD_PROJECT: test-triton-ascend-1
       MAX_WAIT_MIN: '25'
       POLL_INTERVAL_SEC: '30'
     steps:
