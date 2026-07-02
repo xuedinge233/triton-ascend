@@ -554,6 +554,13 @@ CONSTRAINTS = {
         "example":
         "triton.language.interleave",
     },
+    "triton.language.interleave": {
+        "constraints": [
+            "DataType: Ascend A2/A3 does not support fp64, fp8e4, fp8e5, uint16, uint32, uint64 (hardware limitation).",
+        ],
+        "example":
+        "triton.language.interleave",
+    },
     "triton.language.join": {
         "constraints": [
             "DataType: Ascend A2/A3 does not support fp64, fp8e4, fp8e5, uint16, uint32, uint64 (hardware limitation).",
