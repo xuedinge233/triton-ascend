@@ -33,9 +33,7 @@ concurrency:
 jobs:
   docs-check:
     name: Docs gate
-    runs-on: linux-aarch64-cpu-1
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
