@@ -62,6 +62,7 @@ Triton Ascend
     max_autotune_guide.md
     debug_guide/debugging.md
     debug_guide/profiling.md
+    debug_guide/precision.md
     debug_guide/ub_overflow.md
 
 .. toctree::
