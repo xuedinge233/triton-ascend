@@ -105,7 +105,7 @@ jobs:
               return;
             }
 
-            // ── Step 3: Poll RTD until completion ───────────────────
+            // ── Step 5: Poll RTD until completion ───────────────────
 
             const buildsUrl = `${apiBase}/projects/${project}/builds/?commit=${sha}`;
             const deadline  = Date.now() + maxWaitMin * 60 * 1000;
