@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      RTD_PROJECT: triton-ascend
+      RTD_PROJECT: test-triton-ascend-1
       MAX_WAIT_MIN: '25'
       POLL_INTERVAL_SEC: '30'
     steps:
