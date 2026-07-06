@@ -3,18 +3,18 @@ name: LLVM Build
 # TEMPORARILY DISABLED — all triggers commented out so this workflow never
 # starts and never occupies a runner. Uncomment to re-enable.
 on:
-  # push:
-  #   paths:
-  #     - cmake/llvm-hash.txt
-  #     - third_party/ascend/llvm_patch/**
-  #     - .github/workflows/llvm-build.yml
-  #     - .github/workflows/llvm-build/**
-  # pull_request:
-  #   paths:
-  #     - cmake/llvm-hash.txt
-  #     - third_party/ascend/llvm_patch/**
-  #     - .github/workflows/llvm-build.yml
-  #     - .github/workflows/llvm-build/**
+  push:
+    paths:
+      - cmake/llvm-hash.txt
+      - third_party/ascend/llvm_patch/**
+      - .github/workflows/llvm-build.yml
+      - .github/workflows/llvm-build/**
+  pull_request:
+    paths:
+      - cmake/llvm-hash.txt
+      - third_party/ascend/llvm_patch/**
+      - .github/workflows/llvm-build.yml
+      - .github/workflows/llvm-build/**
   workflow_dispatch:
 
 env:
@@ -41,22 +41,26 @@ jobs:
   build:
     name: Build on ${{ matrix.config.runner }}
     runs-on: ${{ matrix.config.runs_on }}
-    # The LLVM compile happens entirely inside the remote buildkitd daemon, so
-    # the runner only needs the buildctl client + network access to the daemon
-    # (no Docker, no `container:`). These labels can be downsized from cpu-16
-    # since nothing compiles locally anymore — they just need to sit inside the
-    # cluster that can resolve/reach BUILDKITD_ADDR.
+    # ARC (K8s) runner — the job MUST run inside a container. The buildkitd TLS
+    # certs are injected by a Vault sidecar into a shared volume within the pod;
+    # that volume MUST be mounted into THIS container by the runner pod template
+    # (see .github/runner/buildkitd-vault-injection.yaml), NOT via `volumes:` here
+    # (which maps to hostPath and fails with ENOENT when the host dir doesn't
+    # exist). The real LLVM compile runs on the remote buildkitd daemon, so this
+    # container only needs the buildctl binary + network access.
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
     timeout-minutes: 240
 
     strategy:
       fail-fast: false
       matrix:
         config:
-        - {runner: 'Ubuntu 22.04',       runs_on: 'linux-amd64-cpu-16',   target-os: 'ubuntu',    arch: 'x64',   platform: 'linux/amd64', dockerfile: 'ubuntu.Dockerfile'}
-        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'linux-aarch64-cpu-16', target-os: 'ubuntu',    arch: 'arm64', platform: 'linux/arm64', dockerfile: 'ubuntu.Dockerfile'}
-        - {runner: 'CentOS 7',           runs_on: 'linux-amd64-cpu-16',   target-os: 'centos',    arch: 'x64',   platform: 'linux/amd64', dockerfile: 'centos.Dockerfile'}
-        - {runner: 'AlmaLinux 8',        runs_on: 'linux-amd64-cpu-16',   target-os: 'almalinux', arch: 'x64',   platform: 'linux/amd64', dockerfile: 'almalinux.Dockerfile'}
-        - {runner: 'AlmaLinux 8 ARM64',  runs_on: 'linux-aarch64-cpu-16', target-os: 'almalinux', arch: 'arm64', platform: 'linux/arm64', dockerfile: 'almalinux.Dockerfile'}
+        - {runner: 'Ubuntu 22.04',       runs_on: 'linux-amd64-cpu-16-hk',   target-os: 'ubuntu',    arch: 'x64',   platform: 'linux/amd64', dockerfile: 'ubuntu.Dockerfile'}
+        # - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'linux-aarch64-cpu-16-hk', target-os: 'ubuntu',    arch: 'arm64', platform: 'linux/arm64', dockerfile: 'ubuntu.Dockerfile'}
+        - {runner: 'CentOS 7',           runs_on: 'linux-amd64-cpu-16-hk',   target-os: 'centos',    arch: 'x64',   platform: 'linux/amd64', dockerfile: 'centos.Dockerfile'}
+        - {runner: 'AlmaLinux 8',        runs_on: 'linux-amd64-cpu-16-hk',   target-os: 'almalinux', arch: 'x64',   platform: 'linux/amd64', dockerfile: 'almalinux.Dockerfile'}
+        # - {runner: 'AlmaLinux 8 ARM64',  runs_on: 'linux-aarch64-cpu-16-hk', target-os: 'almalinux', arch: 'arm64', platform: 'linux/arm64', dockerfile: 'almalinux.Dockerfile'}
 
     steps:
 

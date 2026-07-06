@@ -4,22 +4,22 @@ name: Release Triton Ascend Images
 # starts and never occupies a runner. Uncomment to re-enable.
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'docker/Dockerfile'
-  #     - 'Makefile'
-  #     - 'requirements.txt'
-  #     - 'requirements_dev.txt'
-  #     - '.github/workflows/build-docker-image.yml'
-  # pull_request:
-  #   branches: [main]
-  #   paths:
-  #     - 'docker/Dockerfile'
-  #     - 'Makefile'
-  #     - 'requirements.txt'
-  #     - 'requirements_dev.txt'
-  #     - '.github/workflows/build-docker-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile'
+      - 'Makefile'
+      - 'requirements.txt'
+      - 'requirements_dev.txt'
+      - '.github/workflows/build-docker-image.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile'
+      - 'Makefile'
+      - 'requirements.txt'
+      - 'requirements_dev.txt'
+      - '.github/workflows/build-docker-image.yml'
 
 permissions:
   contents: read
@@ -41,11 +41,16 @@ env:
 jobs:
   build-images:
     name: Build ${{ matrix.cann_version }}-${{ matrix.chip_type }}-${{ matrix.os }}-py${{ matrix.python_version }}
-    # The image build runs entirely inside the remote buildkitd daemon, so the
-    # runner only needs the buildctl client + network access to the daemon (no
-    # Docker, no buildx, no QEMU). This label can be downsized — nothing builds
-    # locally — it just has to sit inside the cluster that reaches BUILDKITD_ADDR.
-    runs-on: linux-amd64-cpu-16
+    # ARC (K8s) runner — the job MUST run inside a container. The buildkitd TLS
+    # certs are injected by a Vault sidecar into a shared volume within the pod;
+    # that volume MUST be mounted into THIS container by the runner pod template
+    # (see .github/runner/buildkitd-vault-injection.yaml), NOT via `volumes:` here
+    # (which maps to hostPath and fails with ENOENT when the host dir doesn't
+    # exist). The real image build runs on the remote buildkitd daemon, so this
+    # container only needs the buildctl binary + network access.
+    runs-on: linux-amd64-cpu-16-hk
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
 
     strategy:
       fail-fast: false
