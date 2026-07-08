@@ -1,70 +1,107 @@
 # GitHub Actions workflow: Sync upstream Triton into triton-ascend fork
+# with progressive step-by-step merge + NPU test + AI fix retry loop.
 #
-# Place this file in YOUR TRITON-ASCEND FORK REPO at:
+# Place this file in YOUR TRITON-ASCEND REPO at:
 #   .github/workflows/sync-upstream.yml
 #
-# Required GitHub Secret (Settings → Secrets and variables → Actions):
+# Required GitHub Secrets (Settings → Secrets and variables → Actions):
 #   ANTHROPIC_API_KEY  — DeepSeek API key (used via Anthropic-compatible API)
-#   SYNC_PAT           — PAT with repo scope (push workflow-file changes)
 #
-# The workflow:
-#   1. Checks out your triton-ascend fork
-#   2. Adds & fetches upstream-triton remote (triton-lang/triton)
-#   3. Clones & installs TA_main2main_workflow
-#   4. Runs ta-kickoff → merge → AI resolve conflicts → build → test
-#   5. Pushes work branch + creates PR targeting main
+# Architecture — Progressive step-by-step merge with per-step CI loop:
+#
+#   The sync is split into N steps (batches of upstream commits). Each step
+#   must pass NPU build + tests before the next step is merged.
+#
+#   Step 0, attempt 1:
+#     Job "merge" (ubuntu-latest):
+#       └─ ta-kickoff --mode=merge (TA_CURRENT_STEP=0)
+#          → detect commits → plan N steps → merge step 0 → AI resolve conflicts
+#          → push work branch → write metadata (current_step=0, total_steps=N)
+#
+#     Job "test" (NPU runner):
+#       └─ integration-tests-ascend.yml with ref=work_branch
+#          → checkout → build → pytest → MLIR tests → upload logs
+#
+#     If test FAILS (attempt < max):
+#       Job "fix-and-retry" (ubuntu-latest):
+#         └─ ta-kickoff --mode=fix → AI analyze logs → fix → commit → push
+#         └─ Re-trigger this workflow (same step, attempt+1)
+#
+#     If test PASSES AND more steps remain:
+#       Job "advance-step" (ubuntu-latest):
+#         └─ Re-trigger this workflow (step+1, attempt=1)
+#           → Next run: merge job merges step 1 onto the SAME work branch
+#
+#     If test PASSES AND all steps done:
+#       Job "create-pr" (ubuntu-latest):
+#         └─ gh pr create
+#
+#   If ALL attempts exhausted for a step:
+#     Job "give-up" → prints manual intervention guide
 
 name: Sync Upstream Triton
 
 on:
-  # schedule:
-  #   # Run daily at 2:00 AM UTC
-  #   - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       target_commit:
-        description: 'Specific upstream triton commit SHA (leave empty for latest)'
+        description: 'Upstream triton commit SHA (leave empty for latest)'
         required: false
         default: ''
-      enable_codegraph:
-        description: 'Enable Codegraph MCP server (code intelligence for AI)'
-        type: boolean
+      work_branch:
+        description: '[AUTO] Work branch name — do not fill manually'
         required: false
-        default: false
+        default: ''
+      current_step:
+        description: '[AUTO] Current step index (0-based) — do not fill manually'
+        type: number
+        default: 0
+      total_steps:
+        description: '[AUTO] Total number of steps — do not fill manually'
+        type: number
+        default: 0
+      attempt:
+        description: '[AUTO] Retry attempt within current step — do not fill manually'
+        type: number
+        default: 1
+      max_attempts:
+        description: 'Maximum AI fix+retry attempts PER STEP before giving up'
+        type: number
+        default: 5
 
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
-  sync-upstream:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 1: Merge ONE step (first attempt of each step only)
+  # ═══════════════════════════════════════════════════════════════════════════
+  merge:
+    if: inputs.attempt == 1
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-
+    timeout-minutes: 60
+    outputs:
+      work_branch: ${{ steps.get-metadata.outputs.work_branch }}
+      target_commit: ${{ steps.get-metadata.outputs.target_commit }}
+      current_step: ${{ steps.get-metadata.outputs.current_step }}
+      total_steps: ${{ steps.get-metadata.outputs.total_steps }}
+      is_last_step: ${{ steps.get-metadata.outputs.is_last_step }}
+      no_changes: ${{ steps.get-metadata.outputs.no_changes }}
     steps:
-      # ── 1. Checkout triton-ascend fork ──────────────────────────────────────
+      # ── Setup ────────────────────────────────────────────────────────────
       - name: Checkout triton-ascend
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      # ── 2. Configure git user and push access ──────────────────────────────
       - name: Configure git
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.name  "TA Sync Bot"
-          git config --global user.email "ta-sync-bot@users.noreply.github.com"
-          # Authenticate gh CLI
-          echo "${TOKEN}" | gh auth login --with-token
-          # Let gh CLI handle git auth (works for HTTPS + both SSH formats)
-          gh auth setup-git
-          # Verify
-          echo "=== gh auth ===" && gh auth status
-          echo "=== git auth ===" && git ls-remote origin HEAD | head -1
+          git config user.name  "TA Sync Bot"
+          git config user.email "ta-sync-bot@users.noreply.github.com"
 
-      # ── 3. Set up upstream remotes ──────────────────────────────────────────
       - name: Add upstream remotes
         run: |
           if ! git remote get-url upstream-triton 2>/dev/null; then
@@ -72,71 +109,42 @@ jobs:
           fi
           git fetch upstream-triton --prune
 
-      # ── 4. Install Python ───────────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # ── 5. Install TA_main2main_workflow ─────────────────────────────────────
       - name: Install TA_main2main_workflow
         run: |
           git clone https://github.com/TecJesh/main2main_workflow.git /tmp/ta-workflow
           cd /tmp/ta-workflow/
           pip install -e .
           echo "TA workflow installed: $(ta-kickoff --help 2>&1 | head -1)"
-          pip install pre-commit
 
-      # ── 6. Install Claude Code (AI backend) ─────────────────────────────────
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "Claude Code install skipped (pre-installed)"
 
-      # ── 6b. Set up Codegraph MCP server (optional) ──────────────────────────
-      - name: Set up Codegraph
-        run: |
-          if [ "${{ github.event.inputs.enable_codegraph }}" = "true" ]; then
-            curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
-            echo "Codegraph installed: $(which codegraph)"
-            codegraph init -i ${{ github.workspace }}
-            echo "Codegraph initialized on workspace"
-            mkdir -p ~/.claude
-            printf '{\n  "mcpServers": {\n    "codegraph": {\n      "type": "stdio",\n      "command": "codegraph",\n      "args": ["serve", "--mcp"],\n      "cwd": "%s"\n    }\n  }\n}\n' "${{ github.workspace }}" > ~/.claude.json
-            echo "Claude Code MCP configured:"
-            cat ~/.claude.json
-          else
-            echo "Codegraph disabled — skipping"
-          fi
-
-      # ── 7. Resolve target commit ────────────────────────────────────────────
-      - name: Set target commit
+      - name: Resolve target commit
         id: target
         run: |
-          if [ -n "${{ github.event.inputs.target_commit }}" ]; then
-            echo "COMMIT=${{ github.event.inputs.target_commit }}" >> $GITHUB_OUTPUT
+          if [ -n "${{ inputs.target_commit }}" ]; then
+            echo "COMMIT=${{ inputs.target_commit }}" >> $GITHUB_OUTPUT
           else
             echo "COMMIT=$(git rev-parse upstream-triton/main)" >> $GITHUB_OUTPUT
           fi
           echo "Target: ${COMMIT:-unknown}"
 
-      # ── 8. Run sync ─────────────────────────────────────────────────────────
-      - name: Debug git config
-        run: |
-          echo "=== Global gitconfig ==="
-          cat ~/.gitconfig 2>/dev/null || echo "(none)"
-          echo "=== origin remote ==="
-          git remote -v
-          echo "=== git push dry-run ==="
-          git push --dry-run origin HEAD 2>&1 || true
-          echo "=== gh auth status ==="
-          gh auth status 2>&1 || true
-
-      - name: Run main2main sync
+      # ── Run AI merge for this step ───────────────────────────────────────
+      - name: Run AI merge (step ${{ inputs.current_step }})
+        id: merge
         env:
           TRITON_ASCEND_PATH: ${{ github.workspace }}
           TRITON_PATH: ${{ github.workspace }}
           TRITON_TARGET_COMMIT: ${{ steps.target.outputs.COMMIT }}
-
-          # AI backend (DeepSeek via Anthropic-compatible API)
+          TA_MAIN2MAIN_WORKSPACE: /tmp/ta-workspace
+          TA_MODE: merge
+          TA_CURRENT_STEP: ${{ inputs.current_step }}
+          TA_WORK_BRANCH: ${{ inputs.work_branch }}
           AI_BACKEND: claude
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
@@ -146,42 +154,291 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
           CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-flash
           CLAUDE_CODE_EFFORT_LEVEL: max
-
-          # PR creation
-          PUSH_TO_GITHUB: "true"
-          GITHUB_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.SYNC_PAT }}
-
-          # Skip build & test on CI (no NPU)
-          SKIP_BUILD: "true"
-          SKIP_E2E_TEST: "true"
-
           AUTO_STASH: "true"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ta-kickoff
 
-          PR_AUTHOR: TA
-          PR_TYPE: sync
+      # ── Extract outputs ──────────────────────────────────────────────────
+      - name: Read merge metadata
+        id: get-metadata
         run: |
-          ta-kickoff 2>&1 | tee /tmp/ta-output.log
-          if grep -qE "✘|Failed|failed|error" /tmp/ta-output.log; then
-            echo "::error::ta-kickoff reported failure. See log above."
+          META_DIR="/tmp/ta-workspace/merge-metadata"
+          if [ -f "$META_DIR/no_changes.txt" ]; then
+            echo "no_changes=true" >> $GITHUB_OUTPUT
+            echo "work_branch=" >> $GITHUB_OUTPUT
+            echo "target_commit=" >> $GITHUB_OUTPUT
+            echo "current_step=" >> $GITHUB_OUTPUT
+            echo "total_steps=" >> $GITHUB_OUTPUT
+            echo "is_last_step=false" >> $GITHUB_OUTPUT
+            echo "No new upstream commits — nothing to sync."
+          elif [ -f "$META_DIR/all_steps_done.txt" ]; then
+            echo "no_changes=false" >> $GITHUB_OUTPUT
+            echo "work_branch=$(cat $META_DIR/work_branch.txt)" >> $GITHUB_OUTPUT
+            echo "target_commit=$(cat $META_DIR/target_commit.txt)" >> $GITHUB_OUTPUT
+            echo "current_step=all_done" >> $GITHUB_OUTPUT
+            echo "total_steps=$(cat $META_DIR/total_steps.txt)" >> $GITHUB_OUTPUT
+            echo "is_last_step=true" >> $GITHUB_OUTPUT
+          elif [ -f "$META_DIR/work_branch.txt" ]; then
+            echo "no_changes=false" >> $GITHUB_OUTPUT
+            echo "work_branch=$(cat $META_DIR/work_branch.txt)" >> $GITHUB_OUTPUT
+            echo "target_commit=$(cat $META_DIR/target_commit.txt)" >> $GITHUB_OUTPUT
+            echo "current_step=$(cat $META_DIR/current_step.txt)" >> $GITHUB_OUTPUT
+            echo "total_steps=$(cat $META_DIR/total_steps.txt)" >> $GITHUB_OUTPUT
+            echo "is_last_step=$(cat $META_DIR/is_last_step.txt)" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: merge metadata not found at $META_DIR"
+            ls -la /tmp/ta-workspace/ 2>/dev/null || echo "workspace dir missing"
             exit 1
           fi
 
-      # ── 9. Report failure ──────────────────────────────────────────────────
-      - name: Report failure
-        if: failure()
-        run: |
-          echo "::error::Sync workflow failed."
-          echo "Debug info:"
-          echo "  - ta-kickoff log: /tmp/ta-output.log"
-          echo "  - workspace artifacts: uploaded below"
-
-      # ── 10. Upload workspace artifacts (for debugging) ──────────────────────
-      - name: Upload sync artifacts
+      - name: Upload merge logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sync-workspace
-          path: |
-            /tmp/ta-workflow/workspace/
+          name: merge-workspace-step-${{ inputs.current_step }}
+          path: /tmp/ta-workspace/
           retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 2: NPU Tests (build + pytest + MLIR)
+  # ═══════════════════════════════════════════════════════════════════════════
+  test:
+    needs: merge
+    if: |
+      always() &&
+      (needs.merge.result == 'success' || needs.merge.result == 'skipped') &&
+      needs.merge.outputs.no_changes != 'true' &&
+      (needs.merge.outputs.work_branch != '' || inputs.work_branch != '')
+    uses: ./.github/workflows/integration-tests-ascend.yml
+    with:
+      matrix: >-
+        [{"name":"linux-aarch64-a3-4","runner_type":"linux-aarch64-a3-4",
+          "runs_on":["linux-aarch64-a3-4"],"chip_type":"a3"}]
+      ref: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 3: AI Fix & Retry (test failed, attempts remaining for this step)
+  # ═══════════════════════════════════════════════════════════════════════════
+  fix-and-retry:
+    needs: [merge, test]
+    if: |
+      always() &&
+      needs.test.result == 'failure' &&
+      inputs.attempt < inputs.max_attempts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # ── Setup ────────────────────────────────────────────────────────────
+      - name: Checkout work branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "TA Sync Bot"
+          git config user.email "ta-sync-bot@users.noreply.github.com"
+
+      # ── Download test logs for AI analysis ───────────────────────────────
+      - name: Download test logs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-logs-*
+          path: /tmp/test-logs/
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Check downloaded logs
+        run: |
+          echo "Downloaded test logs:"
+          find /tmp/test-logs -type f 2>/dev/null | sort | head -20 || echo "(none)"
+
+      # ── AI backend setup ─────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install TA_main2main_workflow
+        run: |
+          git clone https://github.com/TecJesh/main2main_workflow.git /tmp/ta-workflow
+          cd /tmp/ta-workflow/
+          pip install -e .
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "Claude Code install skipped"
+
+      # ── Run AI fix ───────────────────────────────────────────────────────
+      - name: Run AI fix
+        env:
+          TRITON_ASCEND_PATH: ${{ github.workspace }}
+          TA_MODE: fix
+          TA_WORK_BRANCH: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+          TA_ERROR_LOGS_PATH: /tmp/test-logs
+          TA_FIX_ATTEMPT: ${{ inputs.attempt }}
+          TRITON_TARGET_COMMIT: ${{ needs.merge.outputs.target_commit || inputs.target_commit }}
+          TA_MAIN2MAIN_WORKSPACE: /tmp/ta-fix-workspace
+          AI_BACKEND: claude
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+          ANTHROPIC_MODEL: deepseek-v4-pro[1m]
+          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro[1m]
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro[1m]
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+          CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-flash
+          CLAUDE_CODE_EFFORT_LEVEL: max
+        run: ta-kickoff
+        timeout-minutes: 25
+
+      # ── Re-trigger this workflow (same step, attempt+1) ──────────────────
+      - name: Re-trigger sync workflow (retry same step)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORK_BRANCH: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+          TARGET_COMMIT: ${{ needs.merge.outputs.target_commit || inputs.target_commit }}
+          CURRENT_STEP: ${{ needs.merge.outputs.current_step || inputs.current_step }}
+          TOTAL_STEPS: ${{ needs.merge.outputs.total_steps || inputs.total_steps }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          NEXT_ATTEMPT=$((ATTEMPT + 1))
+          echo "Re-triggering: step=$CURRENT_STEP, attempt=$NEXT_ATTEMPT (AI fix applied)"
+          gh workflow run sync-upstream.yml \
+            -f target_commit="$TARGET_COMMIT" \
+            -f work_branch="$WORK_BRANCH" \
+            -f current_step="$CURRENT_STEP" \
+            -f total_steps="$TOTAL_STEPS" \
+            -f attempt="$NEXT_ATTEMPT" \
+            -f max_attempts="$MAX_ATTEMPTS"
+
+      - name: Upload fix workspace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-workspace-step-${{ inputs.current_step }}-attempt-${{ inputs.attempt }}
+          path: /tmp/ta-fix-workspace/
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 4a: Advance to next step (test passed, more steps remain)
+  # ═══════════════════════════════════════════════════════════════════════════
+  advance-step:
+    needs: [merge, test]
+    if: |
+      always() &&
+      needs.test.result == 'success' &&
+      needs.merge.outputs.is_last_step == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger next step
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORK_BRANCH: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+          TARGET_COMMIT: ${{ needs.merge.outputs.target_commit || inputs.target_commit }}
+          CURRENT_STEP: ${{ needs.merge.outputs.current_step || inputs.current_step }}
+          TOTAL_STEPS: ${{ needs.merge.outputs.total_steps || inputs.total_steps }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+        run: |
+          NEXT_STEP=$((CURRENT_STEP + 1))
+          echo "Step $CURRENT_STEP tests passed — advancing to step $NEXT_STEP / $TOTAL_STEPS"
+          gh workflow run sync-upstream.yml \
+            -f target_commit="$TARGET_COMMIT" \
+            -f work_branch="$WORK_BRANCH" \
+            -f current_step="$NEXT_STEP" \
+            -f total_steps="$TOTAL_STEPS" \
+            -f attempt=1 \
+            -f max_attempts="$MAX_ATTEMPTS"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 4b: Create PR (test passed, ALL steps done)
+  # ═══════════════════════════════════════════════════════════════════════════
+  create-pr:
+    needs: [merge, test]
+    if: |
+      always() &&
+      needs.test.result == 'success' &&
+      needs.merge.outputs.is_last_step == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WORK_BRANCH: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+      TARGET_COMMIT: ${{ needs.merge.outputs.target_commit || inputs.target_commit }}
+      TOTAL_STEPS: ${{ needs.merge.outputs.total_steps || inputs.total_steps }}
+    steps:
+      - name: Checkout work branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORK_BRANCH }}
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Check if PR already exists for this branch
+          PR_EXISTS=$(gh pr list \
+            --head "$WORK_BRANCH" \
+            --state open \
+            --json number \
+            -q '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "$PR_EXISTS" ]; then
+            echo "PR #$PR_EXISTS already exists for branch $WORK_BRANCH"
+            exit 0
+          fi
+
+          TARGET_SHORT=$(echo "$TARGET_COMMIT" | cut -c1-8)
+          gh pr create \
+            --base main \
+            --head "$WORK_BRANCH" \
+            --title "sync: upstream triton merge ${TARGET_SHORT:-latest} (${TOTAL_STEPS} steps)" \
+            --body "## Triton-Ascend Upstream Sync
+
+          - **Target commit**: \`${TARGET_COMMIT:-latest}\`
+          - **Work branch**: \`${WORK_BRANCH}\`
+          - **Total steps**: ${TOTAL_STEPS}
+          - **All ${TOTAL_STEPS} steps passed NPU tests** ✅
+
+          ### Details
+          See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for full logs.
+
+          ---
+          🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 5: Give up (all attempts for this step exhausted)
+  # ═══════════════════════════════════════════════════════════════════════════
+  give-up:
+    needs: [merge, test]
+    if: |
+      always() &&
+      needs.test.result == 'failure' &&
+      inputs.attempt >= inputs.max_attempts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WORK_BRANCH: ${{ needs.merge.outputs.work_branch || inputs.work_branch }}
+      CURRENT_STEP: ${{ needs.merge.outputs.current_step || inputs.current_step }}
+    steps:
+      - name: Report exhaustion
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  ❌ Step $CURRENT_STEP: all ${{ inputs.max_attempts }} fix attempts exhausted."
+          echo "  Tests are still failing on branch: $WORK_BRANCH"
+          echo ""
+          echo "  Manual intervention required:"
+          echo "    1. Check out the work branch:"
+          echo "       git fetch origin $WORK_BRANCH"
+          echo "       git checkout $WORK_BRANCH"
+          echo "    2. Review CI logs in this workflow run"
+          echo "    3. Fix remaining issues manually"
+          echo "    4. Push fixes, then re-trigger this workflow with:"
+          echo "       gh workflow run sync-upstream.yml \\"
+          echo "         -f work_branch=$WORK_BRANCH \\"
+          echo "         -f current_step=$CURRENT_STEP \\"
+          echo "         -f attempt=$(( ${{ inputs.attempt }} + 1 ))"
+          echo "════════════════════════════════════════════════════════════════"
+          exit 0
