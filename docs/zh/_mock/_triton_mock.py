@@ -73,8 +73,19 @@ class _DriverBase(metaclass=ABCMeta):
         raise NotImplementedError
 
 
+class _AutoModule(types.ModuleType):
+    """A module that auto-generates MagicMock for any undefined attribute."""
+
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        mock = MagicMock(name=f"{self.__name__}.{name}")
+        setattr(self, name, mock)
+        return mock
+
+
 def _make_module(name: str, parent=None) -> types.ModuleType:
-    mod = types.ModuleType(name)
+    mod = _AutoModule(name)
     mod.__package__ = name
     mod.__path__ = []
     # A real (non-None) spec keeps importlib.util.find_spec(name) working for
@@ -108,6 +119,7 @@ def install() -> None:
     libtriton.getenv_bool = (lambda key, default=False: os.environ.get(key, "1" if default else "0").lower() in
                              ("1", "true", "yes"))
     libtriton.get_cache_invalidating_env_vars = lambda: []
+    libtriton.native_specialize_impl = MagicMock(name="triton._C.libtriton.native_specialize_impl")
     libtriton.ir = MagicMock(name="triton._C.libtriton.ir")
     libtriton.buffer_ir = MagicMock(name="triton._C.libtriton.buffer_ir")
 
@@ -123,6 +135,14 @@ def install() -> None:
 
     ascend_ext = _make_module("triton._C.libtriton.ascend", parent=libtriton)
     ascend_ext.ir = _ascend_ir_stub
+
+    # triton._C.libtriton.gluon_ir / linear_layout
+    _gluon_ir = _make_module("triton._C.libtriton.gluon_ir", parent=libtriton)
+    _gluon_ir.GluonOpBuilder = MagicMock(name="triton._C.libtriton.gluon_ir.GluonOpBuilder")
+    _gluon_ir.compute_tmem_reg_layout = MagicMock(name="triton._C.libtriton.gluon_ir.compute_tmem_reg_layout")
+
+    _linear_layout = _make_module("triton._C.libtriton.linear_layout", parent=libtriton)
+    _linear_layout.LinearLayout = MagicMock(name="triton._C.libtriton.linear_layout.LinearLayout")
 
     # ------------------------------------------------------------------ #
     # triton.backends – stub out the whole package so that               #
