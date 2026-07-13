@@ -139,6 +139,7 @@ def install() -> None:
 
     _bk = _make_module("triton.backends")
     _bk.backends = {}
+    _bk.BaseBackend = _BaseBackend
     _bk.DriverBase = _DriverBase
     _bk.compiler = _bk_compiler_mod
     _bk.driver = _bk_driver_mod
