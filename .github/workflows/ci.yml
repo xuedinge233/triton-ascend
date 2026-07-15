@@ -44,3 +44,4 @@ jobs:
     uses: ./.github/workflows/integration-tests-ascend.yml
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-ASCEND }}
+    secrets: inherit

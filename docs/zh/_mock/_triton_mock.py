@@ -190,3 +190,31 @@ def install() -> None:
         sys.modules["torch"] = MagicMock(name="torch")
         sys.modules["torch.nn"] = MagicMock(name="torch.nn")
         sys.modules["torch._C"] = MagicMock(name="torch._C")
+
+
+def _load_mock_config(path: str = None, overrides: dict = {}) -> dict:
+    """Read a JSON config file and return merged settings.
+
+    When *path* is omitted the default config under
+    ``docs/_mock_config.json`` is used.  *overrides* are shallow-merged
+    on top.
+    """
+    import json
+
+    if path is None:
+        path = os.path.join(os.path.dirname(__file__), "..", "_mock_config.json")
+
+    result = {}
+    try:
+        f = open(path)
+        result = json.load(f)
+        f.close()
+    except:
+        pass
+
+    # Merge overrides — any key in overrides wins
+    items = list(overrides.keys())
+    for i in range(len(items)):
+        result[items[i]] = overrides[items[i]]
+
+    return result
