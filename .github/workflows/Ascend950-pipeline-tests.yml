@@ -4,33 +4,24 @@ run-name: >-
     (github.event_name == 'workflow_run' && github.event.workflow_run.display_title)
     || format('run {0}', github.run_id)
   }}
-# Orchestration after Wheels finishes:
-#   publish: download wheel artifact → upload to obs://.../triton-ascend/<N>/
-#   trigger: needs publish; calls blue-yellow /start, polls /query, then
-#            removes obs://.../triton-ascend/<N>/ once tests finish.
+# DEPRECATED — replaced by Ascend950-ci.yml (single-workflow model).
+# Triggers are disabled; this file is kept for reference.
 #
-# Runs in base-repo context, so secrets are available even for fork PRs.
-# NEVER check out the PR head SHA — fork code must not execute under the
-# secret-bearing token.
+# Original design:
+#   Orchestration after Wheels finishes:
+#     publish: download wheel artifact → upload to obs://.../triton-ascend/<N>/
+#     trigger: needs publish; calls blue-yellow /start, polls /query, then
+#              removes obs://.../triton-ascend/<N>/ once tests finish.
+#
+#   Runs in base-repo context, so secrets are available even for fork PRs.
+#   NEVER check out the PR head SHA — fork code must not execute under the
+#   secret-bearing token.
 
 on:
-  workflow_run:
-    workflows: ["Ascend950 Wheels Build"]
-    types: [completed]
-  # Manual entry point for testing the blue/yellow API directly from the
-  # runner (reachability + start/query/stop), without waiting for the Wheels
-  # cascade. Drives the dedicated `dispatch_test` job only.
   workflow_dispatch:
-    inputs:
-      pr_id:
-        description: "Test id used in blueRecordId / obs_url (any string)"
-        required: false
-        default: "0"
-      run_stop:
-        description: "Also exercise the stop/cancel call after start"
-        type: boolean
-        required: false
-        default: true
+  # workflow_run:
+  #   workflows: ["Ascend950 Wheels Build"]
+  #   types: [completed]
 
 concurrency:
   # cancel-in-progress is false because /start is non-idempotent (a cancelled
