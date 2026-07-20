@@ -157,3 +157,4 @@ Updated on 2026-05-06:
 | 1 | [zhang-chunli01](https://gitee.com/zhang-chunli01) | 2025-05-23 | [#1](https://gitee.com/ascend/triton-ascend/pulls/1) |
 
 *Due to repository migration, contributors listed above are counted by contributor ID (IDs from different platforms are treated as separate contributors).*
+
