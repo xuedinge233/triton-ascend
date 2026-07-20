@@ -16,6 +16,25 @@
 
 set -eu
 
+# ── Debug helper ──────────────────────────────────────────────────────────
+
+# Print changed docs paths for troubleshooting. When RTD_VERSION_SLUG
+# contains a PR number (e.g. "123") this also logs the commit range.
+log_changed_docs() {
+  local base_ref="${1:-origin/HEAD}"
+  local pr_num=""
+  if echo "${READTHEDOCS_VERSION_SLUG:-}" | grep -E '^[0-9]+$' > /dev/null 2>&1; then
+    pr_num="${READTHEDOCS_VERSION_SLUG}"
+    echo "PR #${pr_num}: checking docs changes against ${base_ref}"
+  fi
+  # List every changed file — avoids expensive diff --stat for large histories
+  for f in $(git diff --name-only "$base_ref" HEAD 2>/dev/null); do
+    if [ "${f#docs/}" != "$f" ] || [ "$f" = ".readthedocs.yaml" ]; then
+      echo "  [docs] $f"
+    fi
+  done
+}
+
 # ── 1. Language mapping ────────────────────────────────────────────────────
 
 case "$READTHEDOCS_LANGUAGE" in
