@@ -9,26 +9,203 @@ on:
 permissions: {}
 
 jobs:
-  label:
-    # Single job with conditional steps — a skipped step doesn't clutter the PR
-    # checks list the way a skipped job does.
+  # ── Ensure all expected labels exist in the repo ──
+  ensure-labels:
     runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
       contents: read
     steps:
-      - name: Label issue
-        if: github.event_name == 'issues'
-        uses: jimschubert/labeler-action@v2
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/github-script@v7
         with:
-          config_path: .github/actions/issue-labeler.yml
+          script: |
+            const DESIRED = {
+              'build':           'Changes to build system or configuration',
+              'CICD':            'Changes to CI/CD workflows or actions',
+              'compiler':        'Changes to C/C++ compiler backend (lib/, include/)',
+              'python':          'Changes to Python runtime or bindings',
+              'tests':           'Changes to test files or infrastructure',
+              'ascend-backend':  'Changes to the Ascend NPU backend',
+              'kernels':         'Changes to Triton kernels',
+              'dependencies':    'Changes to project dependencies',
+              'docker':          'Changes to Docker configuration',
+              'documentation':   'Changes to documentation',
+              'scripts':         'Changes to utility scripts or tooling',
+              'release':         'Changes to release process or versioning',
+            };
 
-      - name: Label PR
-        if: github.event_name == 'pull_request_target'
-        uses: actions/labeler@v5
+            // Fetch existing labels
+            const { data: existing } = await github.rest.issues.listLabelsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const existingNames = new Set(existing.map(l => l.name));
+
+            // Create missing labels
+            for (const [name, desc] of Object.entries(DESIRED)) {
+              if (!existingNames.has(name)) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                  description: desc,
+                  color: 'ededed',
+                });
+                console.log(`Created label: ${name}`);
+              }
+            }
+            console.log('All labels present');
+
+  # ── AI-powered issue labeling ──
+  issue:
+    if: github.event_name == 'issues'
+    needs: ensure-labels
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.deepseek.com/v1' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'deepseek-chat' }}
+        with:
+          script: |
+            const apiKey = process.env.LLM_API_KEY;
+            if (!apiKey) {
+              console.log('LLM_API_KEY not configured, skipping AI labeling');
+              return;
+            }
+
+            // Step 1: Fetch issue content
+            const title = context.payload.issue.title || '';
+            const rawBody = context.payload.issue.body || '';
+            const body = rawBody.length > 4000
+              ? rawBody.slice(0, 4000) + '\n\n[... truncated]'
+              : rawBody;
+
+            // Step 2: Fetch available labels from the repo
+            const { data: repoLabels } = await github.rest.issues.listLabelsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+
+            const labelCatalog = repoLabels.map(l => ({
+              name: l.name,
+              description: l.description || '(no description)',
+            }));
+            const validLabelNames = labelCatalog.map(l => l.name);
+            console.log(`Fetched ${labelCatalog.length} labels from repo`);
+
+            // Step 3: Build prompt
+            const labelList = labelCatalog
+              .map(l => `- **${l.name}**: ${l.description}`)
+              .join('\n');
+
+            const prompt = `You are triaging a GitHub issue. Your task is to analyze the issue and select appropriate labels from the available list.
+
+            ## Available Labels (name + description)
+            ${labelList}
+
+            ## Task
+            1. Read the issue title and body carefully
+            2. Identify the issue type (bug, feature request, documentation, question, etc.)
+            3. Note any technical areas, components, or keywords mentioned
+            4. Select labels from the list above that accurately describe this issue
+            5. Be specific but not excessive — quality over quantity
+
+            ## Rules
+            - Return ONLY a JSON array of label names, e.g. ["bug", "performance"]
+            - Only use label names EXACTLY as listed above
+            - Do NOT include any explanation, text, or markdown — just the JSON array
+            - If no labels clearly apply, return []
+
+            ## Issue Title
+            ${title}
+
+            ## Issue Body
+            ${body}`;
+
+            // Step 4: Call LLM
+            const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com/v1';
+            const model = process.env.LLM_MODEL || 'deepseek-chat';
+            console.log(`Calling ${model} at ${baseUrl} ...`);
+
+            const response = await fetch(`${baseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+              },
+              body: JSON.stringify({
+                model,
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0,
+                max_tokens: 200,
+              }),
+            });
+
+            if (!response.ok) {
+              const err = await response.text();
+              console.error(`LLM API error (${response.status}): ${err}`);
+              return;
+            }
+
+            const data = await response.json();
+            const content = (data.choices?.[0]?.message?.content || '').trim();
+            console.log(`LLM response: ${content}`);
+
+            // Step 5: Parse response
+            let jsonStr = content;
+            const fenceMatch = content.match(/```(?:json)?\s*(\[.*?\])\s*```/s);
+            if (fenceMatch) jsonStr = fenceMatch[1];
+            const arrayMatch = jsonStr.match(/\[.*\]/s);
+            if (!arrayMatch) {
+              console.log('Could not parse labels from LLM response');
+              return;
+            }
+
+            let labels;
+            try {
+              labels = JSON.parse(arrayMatch[0]);
+            } catch {
+              console.log('Failed to parse JSON from LLM response');
+              return;
+            }
+
+            // Step 6: Validate against actual repo labels
+            const valid = labels.filter(l => validLabelNames.includes(l));
+            const rejected = labels.filter(l => !validLabelNames.includes(l));
+            if (rejected.length > 0) {
+              console.log(`Rejected invalid labels: ${rejected.join(', ')}`);
+            }
+
+            // Step 7: Apply labels
+            if (valid.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: valid,
+              });
+              console.log(`Labels applied: ${valid.join(', ')}`);
+            } else {
+              console.log('No valid labels to apply');
+            }
+
+  # ── File-path-based PR labeling ──
+  pr:
+    if: github.event_name == 'pull_request_target'
+    needs: ensure-labels
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@v5
         with:
           configuration-path: .github/actions/labeler.yml
           sync-labels: true
