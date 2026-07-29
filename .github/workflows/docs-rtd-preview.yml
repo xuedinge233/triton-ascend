@@ -55,6 +55,8 @@ jobs:
 
             // ── helpers ──────────────────────────────────────────────
 
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+
             async function setStatus(state, description) {
               await github.rest.repos.createCommitStatus({
                 owner: context.repo.owner,
@@ -95,16 +97,40 @@ jobs:
               if (attempt > 0) { await sleep(10000); }
               try {
                 const pResp = await fetch(searchUrl, authHeaders);
-                if (pResp.ok) {
-                  const pData = await pResp.json();
-                  const recent = (pData.results || [])[0];
-                  if (recent) {
-                    foundBuild = true;
-                    core.info(`Found build #${recent.id} (state=${(recent.state||{}).code}).`);
-                  }
+                if (!pResp.ok) {
+                  core.warning(
+                    `RTD builds API returned ${pResp.status} (attempt ${attempt + 1})`
+                  );
+                  continue;
+                }
+                const pData = await pResp.json();
+                const results = pData.results || [];
+
+                // Filter by version to handle the case where the same head
+                // branch is used in multiple PRs — each PR gets its own
+                // version on RTD (the PR number as a string).
+                const rtdVersion = String(prNumber);
+                const recent = results.find(
+                  r => String(r.version || '') === rtdVersion
+                );
+                if (recent) {
+                  foundBuild = true;
+                  core.info(`Found build #${recent.id} (state=${(recent.state||{}).code}) for version ${rtdVersion}.`);
+                } else if (results.length === 0) {
+                  core.info(
+                    `RTD returned 0 builds for commit ${sha} ` +
+                    `(attempt ${attempt + 1}) — build may not be created yet`
+                  );
+                } else if (results.length > 0) {
+                  const versions = results.map(r => r.version || '<none>');
+                  core.info(
+                    `RTD returned ${results.length} build(s) for this commit ` +
+                    `but none match version "${rtdVersion}". ` +
+                    `Seen versions: [${versions.join(', ')}]`
+                  );
                 }
               } catch (e) {
-                core.info(`Build search failed (attempt ${attempt + 1}): ${e.message}`);
+                core.warning(`Build search failed (attempt ${attempt + 1}): ${e.message}`);
               }
             }
 
@@ -118,7 +144,7 @@ jobs:
 
             const buildsUrl = `${apiBase}/projects/${project}/builds/?commit=${sha}`;
             const deadline  = Date.now() + maxWaitMin * 60 * 1000;
-            const sleep     = ms => new Promise(r => setTimeout(r, ms));
+            const rtdVersion = String(prNumber);
 
             let lastReportedState = 'pending';
 
@@ -128,7 +154,11 @@ jobs:
                 const bResp = await fetch(buildsUrl, authHeaders);
                 if (bResp.ok) {
                   const bData = await bResp.json();
-                  build = (bData.results || [])[0] || null;
+                  // Filter by version to ensure we only track the build
+                  // for THIS PR, not another PR sharing the same head commit.
+                  build = (bData.results || []).find(
+                    r => String(r.version || '') === rtdVersion
+                  ) || null;
                 } else {
                   core.warning(`RTD builds API returned ${bResp.status}`);
                 }
