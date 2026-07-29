@@ -97,10 +97,16 @@ jobs:
                 const pResp = await fetch(searchUrl, authHeaders);
                 if (pResp.ok) {
                   const pData = await pResp.json();
-                  const recent = (pData.results || [])[0];
+                  // Filter by version to handle the case where the same head
+                  // branch is used in multiple PRs — each PR gets its own
+                  // `external-{prNumber}` version on RTD.
+                  const rtdVersion = `external-${prNumber}`;
+                  const recent = (pData.results || []).find(
+                    r => (r.version || '') === rtdVersion
+                  );
                   if (recent) {
                     foundBuild = true;
-                    core.info(`Found build #${recent.id} (state=${(recent.state||{}).code}).`);
+                    core.info(`Found build #${recent.id} (state=${(recent.state||{}).code}) for version ${rtdVersion}.`);
                   }
                 }
               } catch (e) {
@@ -119,6 +125,7 @@ jobs:
             const buildsUrl = `${apiBase}/projects/${project}/builds/?commit=${sha}`;
             const deadline  = Date.now() + maxWaitMin * 60 * 1000;
             const sleep     = ms => new Promise(r => setTimeout(r, ms));
+            const rtdVersion = `external-${prNumber}`;
 
             let lastReportedState = 'pending';
 
@@ -128,7 +135,11 @@ jobs:
                 const bResp = await fetch(buildsUrl, authHeaders);
                 if (bResp.ok) {
                   const bData = await bResp.json();
-                  build = (bData.results || [])[0] || null;
+                  // Filter by version to ensure we only track the build
+                  // for THIS PR, not another PR sharing the same head commit.
+                  build = (bData.results || []).find(
+                    r => (r.version || '') === rtdVersion
+                  ) || null;
                 } else {
                   core.warning(`RTD builds API returned ${bResp.status}`);
                 }
