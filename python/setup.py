@@ -57,7 +57,7 @@ class BackendInstaller:
 
     @staticmethod
     def prepare(backend_name: str, backend_src_dir: str = None, is_external: bool = False):
-        # Initialize submodule if there is one for in-tree backends.
+        # Initialize submodule if there is one for in-tree backends. ADD   test
         if not is_external:
             root_dir = os.path.join(os.pardir, "third_party")
             assert backend_name in os.listdir(
