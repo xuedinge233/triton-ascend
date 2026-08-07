@@ -81,12 +81,22 @@ jobs:
             NEED_CSPELL=1
           fi
           if [ -n "$NEED_CSPELL" ]; then
+            # setup-node may not add npm to PATH inside containers — locate it
+            # relative to node (which is known to work).
+            NPM="$(command -v npm 2>/dev/null || true)"
+            if [ -z "$NPM" ]; then
+              NPM="$(dirname "$(command -v node)")/npm"
+            fi
+            if [ ! -x "$NPM" ]; then
+              echo "::error::npm not found (tried PATH and $(dirname "$(command -v node)")/npm)"
+              exit 1
+            fi
             CSPELL_DIR="${DOCS_CSPELL_DIR:-$REPO_ROOT/.cache}"
             if [ ! -d "$CSPELL_DIR/node_modules/cspell-lib" ]; then
               echo "Installing cspell-lib@${DOCS_CSPELL_VERSION:-9.2.1} for codespell-check"
               mkdir -p "$CSPELL_DIR"
               [ -f "$CSPELL_DIR/package.json" ] || printf '{"name":"docs-ci-runtime","private":true}\n' > "$CSPELL_DIR/package.json"
-              ( cd "$CSPELL_DIR" && npm i --no-audit --no-fund --loglevel=error "cspell-lib@${DOCS_CSPELL_VERSION:-9.2.1}" )
+              ( cd "$CSPELL_DIR" && "$NPM" i --no-audit --no-fund --loglevel=error "cspell-lib@${DOCS_CSPELL_VERSION:-9.2.1}" )
             fi
             # Symlink node_modules next to the checker so the bundle can resolve cspell-lib.
             CLI_DIR="$(dirname "$CLI_PATH")"
