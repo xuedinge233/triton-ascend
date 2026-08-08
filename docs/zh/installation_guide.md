@@ -306,5 +306,5 @@ root@localhost:/# npu-smi  info
 +---------------------------+---------------+----------------------------------------------------------------------+
 | NPU     Chip              | Process id    | Process name       | Process memory(MB)    | Process id in container |
 +===========================+===============+======================================================================+
-| No running processes found in NPU 0                                                                              |
+| No running processes found in NPU 0   test                                                                       |
 ```
