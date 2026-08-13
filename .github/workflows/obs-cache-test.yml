@@ -1,0 +1,255 @@
+name: OBS Cache Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact-run-id:
+        description: 'GitHub Actions run ID for the test artifact'
+        required: false
+        default: '31573252016'
+      artifact-id:
+        description: 'Artifact ID to download as test data'
+        required: false
+        default: '9132970323'
+      test-key:
+        description: 'Cache key to use for the test'
+        required: false
+        default: 'obs-cache-test-data-v1'
+  # PR: restore-only test (no OBS credentials available).
+  pull_request:
+    paths:
+      - '.github/actions/obs-cache.yml'
+      - '.github/workflows/obs-cache-test.yml'
+  # Push: full save + restore test (secrets available).
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/obs-cache.yml'
+      - '.github/workflows/obs-cache-test.yml'
+
+concurrency:
+  group: obs-cache-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read   # needed to download artifacts via API
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # seed-cache — populate OBS with test data (push / workflow_dispatch only)
+  # ═══════════════════════════════════════════════════════════════════════════
+  seed-cache:
+    name: Seed OBS cache
+    # On PR: skip (no secrets → can't write). The restore test below still runs.
+    # On push / workflow_dispatch: upload test data to OBS.
+    if: github.event_name != 'pull_request'
+    runs-on: linux-amd64-cpu-4
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
+    timeout-minutes: 30
+
+    env:
+      ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-run-id || '31573252016' }}
+      ARTIFACT_ID:     ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-id     || '9132970323' }}
+      TEST_KEY:        ${{ github.event_name == 'workflow_dispatch' && inputs.test-key        || 'obs-cache-test-data-v1' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download test artifact from GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "::group::Downloading artifact ${ARTIFACT_ID} from run ${ARTIFACT_RUN_ID}"
+
+          # Download via GitHub API. The artifact is a zip file.
+          curl -fSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/test-artifact.zip
+
+          echo "Downloaded: $(du -h /tmp/test-artifact.zip | cut -f1)"
+          ls -lh /tmp/test-artifact.zip
+
+          # Extract into a well-known location that mimics a real cache path.
+          TEST_CACHE_DIR="${GITHUB_WORKSPACE}/.obs-cache-test"
+          mkdir -p "${TEST_CACHE_DIR}"
+          unzip -q /tmp/test-artifact.zip -d "${TEST_CACHE_DIR}/"
+          rm -f /tmp/test-artifact.zip
+
+          echo "Test cache contents:"
+          find "${TEST_CACHE_DIR}" -type f | head -50
+          echo "Total files: $(find "${TEST_CACHE_DIR}" -type f | wc -l)"
+          echo "::endgroup::"
+
+      # Use obs-cache action to save the test data to OBS.
+      # This step only runs because we're on push / workflow_dispatch.
+      - name: Save test cache to OBS
+        uses: ./.github/actions/obs-cache.yml
+        with:
+          key: ${{ env.TEST_KEY }}
+          path: |
+            ${{ github.workspace }}/.obs-cache-test
+          obs-ak: ${{ secrets.OBS_AK }}
+          obs-sk: ${{ secrets.OBS_SK }}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # test-restore — verify cache can be restored (all events)
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-restore:
+    name: Test OBS cache restore
+    needs: seed-cache
+    # Always run, even if seed-cache was skipped (PR case).
+    # On PR: restores from the pre-existing cache key (seeded by a prior push).
+    # On push: restores what was just seeded.
+    if: |
+      always() &&
+      (needs.seed-cache.result == 'success' || needs.seed-cache.result == 'skipped')
+    runs-on: linux-amd64-cpu-4
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
+    timeout-minutes: 15
+
+    env:
+      TEST_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.test-key || 'obs-cache-test-data-v1' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Restore the cache from OBS (public-read, no credentials needed).
+      - name: Restore test cache from OBS
+        id: restore
+        uses: ./.github/actions/obs-cache.yml
+        with:
+          key: ${{ env.TEST_KEY }}
+          restore-keys: |
+            obs-cache-test-data-
+          path: |
+            ${{ github.workspace }}/.obs-cache-test
+          # No obs-ak / obs-sk → save step is skipped (read-only)
+
+      - name: Verify cache was restored
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CACHE_DIR="${GITHUB_WORKSPACE}/.obs-cache-test"
+
+          echo "::group::Verification"
+          echo "cache-hit: ${{ steps.restore.outputs.cache-hit }}"
+
+          if [ "${{ steps.restore.outputs.cache-hit }}" = "true" ]; then
+            echo "✓ Cache was restored successfully"
+
+            if [ -d "${CACHE_DIR}" ]; then
+              echo "  Files restored: $(find "${CACHE_DIR}" -type f | wc -l)"
+              echo "  Total size: $(du -sh "${CACHE_DIR}" | cut -f1)"
+              echo ""
+              echo "  Sample contents (first 20 files):"
+              find "${CACHE_DIR}" -type f | head -20
+            else
+              echo "  WARNING: cache-hit=true but ${CACHE_DIR} does not exist"
+            fi
+          else
+            echo "✗ Cache miss"
+            echo "  If this is a PR, the cache key '${TEST_KEY}' may not exist yet."
+            echo "  Merge/rebase on main first, or trigger a push run to seed the cache."
+          fi
+          echo "::endgroup::"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # test-roundtrip — end-to-end save + restore (push / workflow_dispatch only)
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-roundtrip:
+    name: Roundtrip test (save + restore)
+    needs: seed-cache
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      (needs.seed-cache.result == 'success' || needs.seed-cache.result == 'skipped')
+    runs-on: linux-amd64-cpu-4
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Generate unique test data.
+      - name: Create test payload
+        shell: bash
+        run: |
+          ROUNDTRIP_DIR="${GITHUB_WORKSPACE}/.roundtrip-test"
+          mkdir -p "${ROUNDTRIP_DIR}/a" "${ROUNDTRIP_DIR}/b/c"
+          echo "roundtrip-$(date +%s)-${RANDOM}" > "${ROUNDTRIP_DIR}/a/sentinel.txt"
+          echo "nested-${RANDOM}"              > "${ROUNDTRIP_DIR}/b/c/nested.txt"
+          echo "top-${RANDOM}"                 > "${ROUNDTRIP_DIR}/top.txt"
+
+          # Record checksums for later comparison.
+          find "${ROUNDTRIP_DIR}" -type f | sort | xargs sha256sum > /tmp/before.sha256
+          echo "Test payload ($(find "${ROUNDTRIP_DIR}" -type f | wc -l) files):"
+          cat /tmp/before.sha256
+
+          # Compute a key that includes content hash so it changes each run.
+          PAYLOAD_HASH=$(sha256sum /tmp/before.sha256 | cut -d' ' -f1 | cut -c1-16)
+          echo "ROUNDTRIP_KEY=roundtrip-${PAYLOAD_HASH}" >> "${GITHUB_ENV}"
+
+      # Save to OBS.
+      - name: Save roundtrip cache
+        uses: ./.github/actions/obs-cache.yml
+        with:
+          key: ${{ env.ROUNDTRIP_KEY }}
+          path: |
+            ${{ github.workspace }}/.roundtrip-test
+          obs-ak: ${{ secrets.OBS_AK }}
+          obs-sk: ${{ secrets.OBS_SK }}
+
+      # Delete local data so restore is meaningful.
+      - name: Delete local data
+        shell: bash
+        run: |
+          rm -rf "${GITHUB_WORKSPACE}/.roundtrip-test"
+          echo "Local data deleted"
+
+      # Restore from OBS.
+      - name: Restore roundtrip cache
+        id: roundtrip-restore
+        uses: ./.github/actions/obs-cache.yml
+        with:
+          key: ${{ env.ROUNDTRIP_KEY }}
+          path: |
+            ${{ github.workspace }}/.roundtrip-test
+
+      # Verify content matches.
+      - name: Verify roundtrip
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::Roundtrip verification"
+
+          echo "cache-hit: ${{ steps.roundtrip-restore.outputs.cache-hit }}"
+
+          if [ "${{ steps.roundtrip-restore.outputs.cache-hit }}" != "true" ]; then
+            echo "FAIL: cache-hit should be true after roundtrip save+restore"
+            exit 1
+          fi
+
+          ROUNDTRIP_DIR="${GITHUB_WORKSPACE}/.roundtrip-test"
+          find "${ROUNDTRIP_DIR}" -type f | sort | xargs sha256sum > /tmp/after.sha256
+
+          if diff /tmp/before.sha256 /tmp/after.sha256; then
+            echo "✓ Roundtrip OK — all checksums match"
+          else
+            echo "FAIL: checksum mismatch"
+            diff /tmp/before.sha256 /tmp/after.sha256 || true
+            exit 1
+          fi
+
+          echo "::endgroup::"
