@@ -46,7 +46,7 @@ jobs:
   wheels-build:
     name: Wheels Build
     timeout-minutes: 120
-    runs-on: linux-amd64-cpu-16-hk
+    runs-on: linux-amd64-cpu-8-hk
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/triton:8.5.0-910b-ubuntu22.04-py3.11-latest
 
