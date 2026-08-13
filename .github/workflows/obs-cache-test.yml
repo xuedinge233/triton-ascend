@@ -4,13 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       artifact-run-id:
-        description: 'GitHub Actions run ID for the test artifact'
+        description: 'GitHub Actions run ID for the test artifact (optional — leave empty to use synthetic data)'
         required: false
-        default: '31573252016'
+        default: '31662521312'
       artifact-id:
-        description: 'Artifact ID to download as test data'
+        description: 'Artifact ID to download as test data (optional — leave empty to use synthetic data; artifacts expire after ~90 days)'
         required: false
-        default: '9132970323'
+        default: '9167123796'
+      artifact-repo:
+        description: 'Repository that owns the artifact, e.g. triton-lang/triton-ascend (needed when running from a fork)'
+        required: false
+        default: 'triton-lang/triton-ascend'
       test-key:
         description: 'Cache key to use for the test'
         required: false
@@ -18,13 +22,13 @@ on:
   # PR: restore-only test (no OBS credentials available).
   pull_request:
     paths:
-      - '.github/actions/obs-cache.yml'
+      - '.github/actions/obs-cache/**'
       - '.github/workflows/obs-cache-test.yml'
   # Push: full save + restore test (secrets available).
   push:
     branches: [main]
     paths:
-      - '.github/actions/obs-cache.yml'
+      - '.github/actions/obs-cache/**'
       - '.github/workflows/obs-cache-test.yml'
 
 concurrency:
@@ -44,59 +48,89 @@ jobs:
     # On PR: skip (no secrets → can't write). The restore test below still runs.
     # On push / workflow_dispatch: upload test data to OBS.
     if: github.event_name != 'pull_request'
-    runs-on: linux-amd64-cpu-4
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
 
     env:
-      ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-run-id || '31573252016' }}
-      ARTIFACT_ID:     ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-id     || '9132970323' }}
+      ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-run-id || '' }}
+      ARTIFACT_ID:     ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-id     || '' }}
+      ARTIFACT_REPO:   ${{ github.event_name == 'workflow_dispatch' && inputs.artifact-repo   || 'triton-lang/triton-ascend' }}
       TEST_KEY:        ${{ github.event_name == 'workflow_dispatch' && inputs.test-key        || 'obs-cache-test-data-v1' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download test artifact from GitHub
+      - name: Prepare test data
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "::group::Downloading artifact ${ARTIFACT_ID} from run ${ARTIFACT_RUN_ID}"
 
-          # Download via GitHub API. The artifact is a zip file.
-          curl -fSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            -o /tmp/test-artifact.zip
-
-          echo "Downloaded: $(du -h /tmp/test-artifact.zip | cut -f1)"
-          ls -lh /tmp/test-artifact.zip
-
-          # Extract into a well-known location that mimics a real cache path.
           TEST_CACHE_DIR="${GITHUB_WORKSPACE}/.obs-cache-test"
           mkdir -p "${TEST_CACHE_DIR}"
-          unzip -q /tmp/test-artifact.zip -d "${TEST_CACHE_DIR}/"
-          rm -f /tmp/test-artifact.zip
+
+          echo "::group::Preparing test data"
+
+          # If an artifact ID is given, try to download it first.
+          if [ -n "${ARTIFACT_ID}" ]; then
+            echo "Downloading artifact ${ARTIFACT_ID} from ${ARTIFACT_REPO} (run ${ARTIFACT_RUN_ID})..."
+
+            # Download via GitHub API. The artifact is a zip file.
+            # ARTIFACT_REPO is used (not GITHUB_REPOSITORY) so this also works
+            # when the workflow runs in a fork.
+            HTTP_CODE=$(curl -sSL -w '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${ARTIFACT_REPO}/actions/artifacts/${ARTIFACT_ID}/zip" \
+              -o /tmp/test-artifact.zip || echo "000")
+
+            if [ "${HTTP_CODE}" = "200" ]; then
+              echo "Downloaded: $(du -h /tmp/test-artifact.zip | cut -f1)"
+              unzip -q /tmp/test-artifact.zip -d "${TEST_CACHE_DIR}/"
+              rm -f /tmp/test-artifact.zip
+            else
+              case "${HTTP_CODE}" in
+                404) echo "WARNING: artifact ${ARTIFACT_ID} not found in ${ARTIFACT_REPO}."
+                     echo "  - expired?  Artifacts are kept only for the retention period."
+                     echo "  - wrong repo?  Override the artifact-repo input if it lives elsewhere." ;;
+                401|403) echo "WARNING: artifact download denied (HTTP ${HTTP_CODE}) — fork tokens cannot access upstream artifacts." ;;
+                *) echo "WARNING: artifact download failed (HTTP ${HTTP_CODE})." ;;
+              esac
+              echo "Falling back to synthetic data."
+              GENERATE_SYNTHETIC=true
+            fi
+          else
+            echo "No artifact-id given — using synthetic data."
+            GENERATE_SYNTHETIC=true
+          fi
+
+          # Fallback: generate synthetic data that mimics cache contents.
+          if [ "${GENERATE_SYNTHETIC:-false}" = "true" ]; then
+            mkdir -p "${TEST_CACHE_DIR}/nested/deep"
+            echo "synthetic-$(date +%s)-${RANDOM}" > "${TEST_CACHE_DIR}/sentinel.txt"
+            echo "payload-${RANDOM}"             > "${TEST_CACHE_DIR}/nested/data.txt"
+            head -c 1048576 /dev/urandom        > "${TEST_CACHE_DIR}/nested/deep/random.bin"
+            echo "Generated 3 synthetic files (~1MB)."
+          fi
 
           echo "Test cache contents:"
           find "${TEST_CACHE_DIR}" -type f | head -50
           echo "Total files: $(find "${TEST_CACHE_DIR}" -type f | wc -l)"
+          echo "Total size: $(du -sh "${TEST_CACHE_DIR}" | cut -f1)"
           echo "::endgroup::"
 
       # Use obs-cache action to save the test data to OBS.
       # This step only runs because we're on push / workflow_dispatch.
       - name: Save test cache to OBS
-        uses: ./.github/actions/obs-cache.yml
+        uses: ./.github/actions/obs-cache
         with:
           key: ${{ env.TEST_KEY }}
           path: |
             ${{ github.workspace }}/.obs-cache-test
-          obs-ak: ${{ secrets.OBS_AK }}
-          obs-sk: ${{ secrets.OBS_SK }}
+          obs-ak: ${{ secrets.OBS_AK_14 }}
+          obs-sk: ${{ secrets.OBS_SK_14 }}
 
   # ═══════════════════════════════════════════════════════════════════════════
   # test-restore — verify cache can be restored (all events)
@@ -110,9 +144,7 @@ jobs:
     if: |
       always() &&
       (needs.seed-cache.result == 'success' || needs.seed-cache.result == 'skipped')
-    runs-on: linux-amd64-cpu-4
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
 
     env:
@@ -125,7 +157,7 @@ jobs:
       # Restore the cache from OBS (public-read, no credentials needed).
       - name: Restore test cache from OBS
         id: restore
-        uses: ./.github/actions/obs-cache.yml
+        uses: ./.github/actions/obs-cache
         with:
           key: ${{ env.TEST_KEY }}
           restore-keys: |
@@ -173,9 +205,7 @@ jobs:
       always() &&
       github.event_name != 'pull_request' &&
       (needs.seed-cache.result == 'success' || needs.seed-cache.result == 'skipped')
-    runs-on: linux-amd64-cpu-4
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
 
     steps:
@@ -203,13 +233,13 @@ jobs:
 
       # Save to OBS.
       - name: Save roundtrip cache
-        uses: ./.github/actions/obs-cache.yml
+        uses: ./.github/actions/obs-cache
         with:
           key: ${{ env.ROUNDTRIP_KEY }}
           path: |
             ${{ github.workspace }}/.roundtrip-test
-          obs-ak: ${{ secrets.OBS_AK }}
-          obs-sk: ${{ secrets.OBS_SK }}
+          obs-ak: ${{ secrets.OBS_AK_14 }}
+          obs-sk: ${{ secrets.OBS_SK_14 }}
 
       # Delete local data so restore is meaningful.
       - name: Delete local data
@@ -221,7 +251,7 @@ jobs:
       # Restore from OBS.
       - name: Restore roundtrip cache
         id: roundtrip-restore
-        uses: ./.github/actions/obs-cache.yml
+        uses: ./.github/actions/obs-cache
         with:
           key: ${{ env.ROUNDTRIP_KEY }}
           path: |

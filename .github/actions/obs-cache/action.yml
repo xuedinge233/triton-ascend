@@ -1,32 +1,35 @@
+# OBS Cache — drop-in replacement for actions/cache@v4.
+#
+# Usage example (kept in comments because `${{ }}` is NOT allowed inside
+# the `description` field — the manifest template engine parses it):
+#
+#   - uses: ./.github/actions/obs-cache
+#     with:
+#       key:   ${{ runner.os }}-${{ runner.arch }}-mycache-${{ hashFiles('...') }}
+#       restore-keys: ${{ runner.os }}-${{ runner.arch }}-mycache-
+#       path: |
+#         ~/.mycache
+#         ${{ github.workspace }}/.buildcache
+#       obs-ak: ${{ secrets.OBS_AK }}     # empty on PR → save is skipped
+#       obs-sk: ${{ secrets.OBS_SK }}
+#
+# Cache object layout in OBS:
+#   s3://<bucket>/<cache-prefix>/<sha256(key)>.tar.gz
+
 name: OBS Cache
 description: >
   Drop-in replacement for actions/cache@v4 that stores caches in OBS
   (Huawei Cloud Object Storage) instead of GitHub's cache backend.
+  See the usage example in the comments at the top of this file.
 
-  Prerequisites:
-  - The cache prefix (s3://<bucket>/<cache-prefix>/) must have public-read
-    access so that PR workflows can download without credentials.
-    On the OBS console: set the bucket policy to allow GetObject on cache/*.
+  Prerequisites: the cache prefix (s3://<bucket>/<cache-prefix>/) must have
+  public-read access so that PR workflows can download without credentials.
 
   Security model:
-  - Restore (read):  uses public OBS URLs — works on PR and push, no secrets needed.
-  - Save    (write): uses obsutil with AK/SK — only runs when credentials are
-    provided.  Callers SHOULD only pass secrets on push events so that PR
-    workflows can never write to the cache bucket.
-
-  Usage (drop-in for actions/cache@v4):
-    - uses: ./.github/actions/obs-cache
-      with:
-        key:   ${{ runner.os }}-${{ runner.arch }}-mycache-${{ hashFiles('...') }}
-        restore-keys: ${{ runner.os }}-${{ runner.arch }}-mycache-
-        path: |
-          ~/.mycache
-          ${{ github.workspace }}/.buildcache
-        obs-ak: ${{ secrets.OBS_AK }}     # empty on PR → save is skipped
-        obs-sk: ${{ secrets.OBS_SK }}
-
-  Cache object layout in OBS:
-    s3://<bucket>/<cache-prefix>/<sha256(key)>.tar.gz
+  - Restore (read): public OBS URLs — works on PR and push, no secrets needed.
+  - Save (write): obsutil with AK/SK — only runs when credentials are provided.
+    Callers SHOULD only pass secrets on push events so that PR workflows can
+    never write to the cache bucket.
 
 inputs:
   key:
@@ -43,15 +46,15 @@ inputs:
     description: 'File paths to cache, one per line.  Tilde (~) and $GITHUB_WORKSPACE are expanded.'
   bucket:
     required: false
-    default: triton-ascend-artifacts
+    default: triton-ascend-cache
     description: 'OBS bucket name.'
   endpoint:
     required: false
-    default: obs.cn-southwest-2.myhuaweicloud.com
+    default: obs.cn-north-12.myhuaweicloud.com
     description: 'OBS endpoint (region-specific).'
   cache-prefix:
     required: false
-    default: cache
+    default: triton-ascend-cache
     description: 'Object key prefix inside the bucket.'
   obs-ak:
     required: false
@@ -91,15 +94,13 @@ runs:
         }
 
         expand_paths() {
-          # Expand ~ and $GITHUB_WORKSPACE in path lines.
+          # Expand bash-style ${GITHUB_WORKSPACE} and ~ in path lines.
+          # Note: callers receive the github.workspace expression already
+          # expanded by the workflow engine, so only bash vars need handling.
           local raw="$1"
           local out=""
           while IFS= read -r p; do
             [ -z "${p:-}" ] && continue
-            # $GITHUB_WORKSPACE is already set by GitHub Actions; handle both
-            # literal "${{ github.workspace }}" (if not pre-expanded) and
-            # "${GITHUB_WORKSPACE}" syntax that callers might use.
-            p="${p//\${{ github.workspace }}/${GITHUB_WORKSPACE}}"
             p="${p//\$\{GITHUB_WORKSPACE\}/${GITHUB_WORKSPACE}}"
             # Expand ~ to $HOME (without adding quotes).
             p="${p//\~/${HOME}}"
@@ -207,7 +208,6 @@ runs:
           local out=""
           while IFS= read -r p; do
             [ -z "${p:-}" ] && continue
-            p="${p//\${{ github.workspace }}/${GITHUB_WORKSPACE}}"
             p="${p//\$\{GITHUB_WORKSPACE\}/${GITHUB_WORKSPACE}}"
             p="${p//\~/${HOME}}"
             p="${p%/}"
