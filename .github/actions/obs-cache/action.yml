@@ -3,14 +3,29 @@
 # Usage example (kept in comments because `${{ }}` is NOT allowed inside
 # the `description` field — the manifest template engine parses it):
 #
+# Composite actions have no post-step, so split restore and save into two
+# invocations around the build:
+#
+#   # Restore before the build (PR-safe — no credentials needed):
 #   - uses: ./.github/actions/obs-cache
 #     with:
+#       mode: restore-only
 #       key:   ${{ runner.os }}-${{ runner.arch }}-mycache-${{ hashFiles('...') }}
 #       restore-keys: ${{ runner.os }}-${{ runner.arch }}-mycache-
 #       path: |
 #         ~/.mycache
 #         ${{ github.workspace }}/.buildcache
-#       obs-ak: ${{ secrets.OBS_AK }}     # empty on PR → save is skipped
+#
+#   # Save after the build (push only — credentials are required):
+#   - if: github.event_name == 'push'
+#     uses: ./.github/actions/obs-cache
+#     with:
+#       mode: save-only
+#       key:   ${{ runner.os }}-${{ runner.arch }}-mycache-${{ hashFiles('...') }}
+#       path: |
+#         ~/.mycache
+#         ${{ github.workspace }}/.buildcache
+#       obs-ak: ${{ secrets.OBS_AK }}
 #       obs-sk: ${{ secrets.OBS_SK }}
 #
 # Cache object layout in OBS:
@@ -32,6 +47,14 @@ description: >
     never write to the cache bucket.
 
 inputs:
+  mode:
+    required: false
+    default: both
+    description: >
+      both (default): restore then save in one invocation — only suitable
+      when the cache data is already populated.  restore-only: use before
+      the build (PR-safe, no credentials needed).  save-only: use after the
+      build on push events with credentials.
   key:
     required: true
     description: 'Primary cache key (exact match).'
@@ -76,6 +99,7 @@ runs:
     # ── Restore ────────────────────────────────────────────────────────────
     - name: Restore cache from OBS
       id: restore
+      if: inputs.mode == 'both' || inputs.mode == 'restore-only'
       shell: bash
       env:
         KEY: ${{ inputs.key }}
@@ -135,7 +159,11 @@ runs:
             return 0
           fi
 
-          echo "    ✗ HTTP ${http_code} — not found"
+          case "${http_code}" in
+            403) echo "    ✗ HTTP 403 — access denied; is the public-read policy configured for ${PREFIX}/* ?" ;;
+            404) echo "    ✗ HTTP 404 — object not found in OBS" ;;
+            *)   echo "    ✗ HTTP ${http_code} — download failed" ;;
+          esac
           rm -f /tmp/obs-cache.tar.gz
           return 1
         }
@@ -185,7 +213,7 @@ runs:
     # ── Save ───────────────────────────────────────────────────────────────
     # Only executes when OBS credentials are present (i.e. on push events).
     - name: Save cache to OBS
-      if: inputs.obs-ak != '' && inputs.obs-sk != ''
+      if: (inputs.mode == 'both' || inputs.mode == 'save-only') && inputs.obs-ak != '' && inputs.obs-sk != ''
       shell: bash
       env:
         KEY: ${{ inputs.key }}

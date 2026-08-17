@@ -38,10 +38,14 @@ permissions: {}
 jobs:
   # ── Wheels Build ──────────────────────────────────────────────────────────
   # Security: under pull_request_target, the workflow file from the base
-  # branch is used. This job checks out the PR head SHA but does NOT receive
-  # any secrets in its env/steps — the only credential available is the
-  # GITHUB_TOKEN scoped to contents:read. PR code (setup.py) cannot exfiltrate
-  # secrets.
+  # branch is used. This job checks out the PR head SHA; on PR events it
+  # receives no secrets — the only credential available is the GITHUB_TOKEN
+  # scoped to contents:read, so PR code (setup.py) cannot exfiltrate secrets.
+  # The cache-save step at the end is guarded by `if: github.event_name ==
+  # 'push'`, which keeps OBS credentials out of the job on PR events
+  # entirely; it only runs where the code is trusted. (TODO before upstream
+  # merge: add `&& github.repository == 'triton-lang/triton-ascend'` so fork
+  # pushes cannot write into the shared cache bucket.)
 
   wheels-build:
     name: Wheels Build
@@ -65,16 +69,18 @@ jobs:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           submodules: "true"
-          # This workflow is scoped to contents:read only and passes zero
-          # secrets to the build job — PR code cannot exfiltrate anything.
+          # On PR events this job is scoped to contents:read only and passes
+          # zero secrets to the build steps — PR code cannot exfiltrate
+          # anything. OBS credentials reach the cache-save step on push only.
           allow-unsafe-pr-checkout: true
 
       - name: Add git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Cache build dependencies
-        uses: actions/cache@v4
+        uses: ./.github/actions/obs-cache
         with:
+          mode: restore-only
           path: |
             ~/.triton/llvm
             ~/.triton/json
@@ -82,6 +88,7 @@ jobs:
             ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels
+          # No obs-ak / obs-sk → restore only, no credentials (PR-safe).
 
       - name: Build triton-ascend wheel
         shell: bash
@@ -128,6 +135,24 @@ jobs:
         # PR build matrix produces a single wheel; capture its filename for
         # downstream jobs (OBS URL, BY pipeline parameter).
         run: echo "name=$(basename wheelhouse/*.whl)" >> "$GITHUB_OUTPUT"
+
+      # Push-only: upload the build cache to OBS. The `if` guard keeps the
+      # OBS credentials out of this job on PR events (the step never runs,
+      # so the secrets are never evaluated), preserving the security model
+      # above. PRs only ever read the cache.
+      - name: Save cache to OBS
+        if: github.event_name == 'push'
+        uses: ./.github/actions/obs-cache
+        with:
+          mode: save-only
+          path: |
+            ~/.triton/llvm
+            ~/.triton/json
+            ~/.triton/nvidia
+            ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
+          obs-ak: ${{ secrets.OBS_AK_14 }}
+          obs-sk: ${{ secrets.OBS_SK_14 }}
 
   # ── Pipeline Tests ────────────────────────────────────────────────────────
   # This job never checks out PR code — it only downloads the binary wheel
