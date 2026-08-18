@@ -1,17 +1,27 @@
-name: Documentation
+name: Docs Specifications Check
+
+# ── Docs CI pipeline ──────────────────────────────────────────────────
+#  1. docs-spec-check.yml   (this file)  – code / spec gate
+#  2. docs-rtd-preview.yml               – trigger RTD + monitor → Check Run
+#
+#  Only changes under docs/ trigger the pipeline (plus self-validation of the
+#  gate's own definition).  docs-rtd-preview.yml listens on workflow_run for
+#  this workflow, so if you rename this workflow, update the `workflows:`
+#  filter there as well.
 
 on:
   pull_request:
     paths:
-      - '*.md'
       - 'docs/**/*.md'
       - 'docs/**/*.mdx'
       - 'docs/**/_toc.yaml'
-      - '.github/workflows/documentation.yml'
+      - '.github/workflows/docs-spec-check.yml'
       - '.github/docs-ci/**'
-  # Manual full scans (checkAll) to surface errors in existing docs
+  # Manual + nightly full scans (checkAll) to surface errors in existing docs
   # that incremental PR runs never touch. These never block a PR.
   workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * *'  # 02:00 Asia/Shanghai
 
 permissions:
   contents: read
@@ -23,9 +33,7 @@ concurrency:
 jobs:
   docs-check:
     name: Docs gate
-    runs-on: linux-amd64-cpu-8-hk
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,7 +59,6 @@ jobs:
           key: docs-ci-${{ runner.os }}-${{ hashFiles('.github/docs-ci/docs-ci-v2.js', '.github/docs-ci/config.json') }}
 
       - name: Run docs gate
-        shell: bash
         env:
           DOCS_TARGET_REPO: ${{ github.repository }}
           # PR: incremental (changed files only). Manual/scheduled: full scan.

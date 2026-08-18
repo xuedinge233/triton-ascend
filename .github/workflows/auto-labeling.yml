@@ -67,8 +67,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      pull-requests: write
+      contents: read
     steps:
-      - uses: jimschubert/labeler-action@v2
+      - name: Label issue
+        if: github.event_name == 'issues'
+        uses: jimschubert/labeler-action@v2
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
