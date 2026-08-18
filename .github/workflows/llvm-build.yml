@@ -117,10 +117,14 @@ jobs:
         rm -rf ${{ env.SCCACHE_DIR }}/*
 
     - name: Enable Cache
-      uses: actions/cache@v4
+      uses: ./.github/actions/obs-cache
       with:
+        mode: restore-only
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
+        # restore-keys only supports exact matches (not the prefix matching
+        # of actions/cache@v4) — passed anyway so a future version can fall
+        # back to the newest cache with this prefix.
         restore-keys: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-
 
     - name: Configure, Build, and Install LLVM (Ubuntu)
@@ -204,6 +208,19 @@ jobs:
 
         obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
         obsutil/obsutil cp -u "${{ env.llvm_install_dir }}.tar.gz" obs://triton-ascend-artifacts/llvm-builds/
+
+    # TODO before upstream merge: add `&& github.repository ==
+    # 'triton-lang/triton-ascend'` to the condition so fork pushes cannot
+    # write into the shared cache bucket (left open for fork validation).
+    - name: Save Cache to OBS
+      if: github.event_name == 'push'
+      uses: ./.github/actions/obs-cache
+      with:
+        mode: save-only
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
+        obs-ak: ${{ secrets.OBS_AK_14 }}
+        obs-sk: ${{ secrets.OBS_SK_14 }}
 
     - name: Dump Sccache Statistics
       run: sccache --show-stats
