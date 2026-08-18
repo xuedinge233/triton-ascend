@@ -117,7 +117,7 @@ jobs:
         rm -rf ${{ env.SCCACHE_DIR }}/*
 
     - name: Enable Cache
-      uses: ./.github/actions/obs-cache
+      uses: ./llvm-build/.github/actions/obs-cache
       with:
         mode: restore-only
         path: ${{ env.SCCACHE_DIR }}
@@ -214,7 +214,7 @@ jobs:
     # write into the shared cache bucket (left open for fork validation).
     - name: Save Cache to OBS
       if: github.event_name == 'push'
-      uses: ./.github/actions/obs-cache
+      uses: ./llvm-build/.github/actions/obs-cache
       with:
         mode: save-only
         path: ${{ env.SCCACHE_DIR }}
