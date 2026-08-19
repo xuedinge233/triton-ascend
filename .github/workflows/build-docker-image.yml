@@ -4,22 +4,22 @@ name: Release Triton Ascend Images
 # starts and never occupies a runner. Uncomment to re-enable.
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'docker/Dockerfile'
-  #     - 'Makefile'
-  #     - 'requirements.txt'
-  #     - 'requirements_dev.txt'
-  #     - '.github/workflows/build-docker-image.yml'
-  # pull_request:
-  #   branches: [main]
-  #   paths:
-  #     - 'docker/Dockerfile'
-  #     - 'Makefile'
-  #     - 'requirements.txt'
-  #     - 'requirements_dev.txt'
-  #     - '.github/workflows/build-docker-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile'
+      - 'Makefile'
+      - 'requirements.txt'
+      - 'requirements_dev.txt'
+      - '.github/workflows/build-docker-image.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile'
+      - 'Makefile'
+      - 'requirements.txt'
+      - 'requirements_dev.txt'
+      - '.github/workflows/build-docker-image.yml'
 
 permissions:
   contents: read
