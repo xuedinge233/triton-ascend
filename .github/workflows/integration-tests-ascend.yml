@@ -38,15 +38,20 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Cache build dependencies
-        uses: actions/cache@v4
+        uses: ./.github/actions/obs-cache
         with:
+          mode: restore-only
           path: |
             ~/.triton/llvm
             ~/.triton/json
             ~/.triton/nvidia
             ~/.ccache
           key: ${{ runner.os }}-${{ runner.arch }}-cann${{ matrix.cann_version }}-${{ matrix.os }}-${{ matrix.config.chip_type }}-py${{ matrix.python_version }}-triton-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
+          # restore-keys only supports exact matches (not the prefix matching
+          # of actions/cache@v4) — passed anyway so a future version can fall
+          # back to the newest cache with this prefix.
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann${{ matrix.cann_version }}-${{ matrix.os }}-${{ matrix.config.chip_type }}-py${{ matrix.python_version }}-triton-
+          # No obs-ak / obs-sk → restore only (PR-safe).
 
       - name: Download and install Bisheng compiler
         shell: bash
@@ -119,6 +124,22 @@ jobs:
           MAX_JOBS="$NUM_PROCS" \
           ${PYTHON} ${SETUP_PY} bdist_wheel
           ${PYTHON} -m pip install dist/*.whl
+
+      # Save the cache after the build on non-PR events. On PR events from
+      # forks the credentials are empty and the action skips the save anyway.
+      - name: Save cache to OBS
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/obs-cache
+        with:
+          mode: save-only
+          path: |
+            ~/.triton/llvm
+            ~/.triton/json
+            ~/.triton/nvidia
+            ~/.ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-cann${{ matrix.cann_version }}-${{ matrix.os }}-${{ matrix.config.chip_type }}-py${{ matrix.python_version }}-triton-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
+          obs-ak: ${{ secrets.OBS_AK_14 }}
+          obs-sk: ${{ secrets.OBS_SK_14 }}
 
       - name: CCache stats
         run: ccache --print-stats

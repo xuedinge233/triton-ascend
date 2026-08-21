@@ -287,6 +287,19 @@ runs:
         tar czf "/tmp/${SAFE_FILE}" ${EXISTING}
         echo "Created /tmp/${SAFE_FILE} ($(du -h "/tmp/${SAFE_FILE}" | cut -f1))"
 
+        # Guard against uploading an empty cache: a tarball holding nothing
+        # but directory entries is a few hundred bytes, and uploading it would
+        # overwrite a real cache under the same key. 10KB is the floor — a
+        # real cache (ccache, downloaded LLVM trees, ...) is always larger.
+        TARBALL_SIZE=$(stat -c%s "/tmp/${SAFE_FILE}" 2>/dev/null || stat -f%z "/tmp/${SAFE_FILE}")
+        if [ "${TARBALL_SIZE}" -lt 10240 ]; then
+          echo "Cache tarball is only ${TARBALL_SIZE} bytes (empty dirs only) — skipping upload"
+          echo "  so an existing cache under this key is not overwritten."
+          rm -f "/tmp/${SAFE_FILE}"
+          echo "::endgroup::"
+          exit 0
+        fi
+
         # ---- upload --------------------------------------------------------
         "${OBSUTIL}" cp -u "/tmp/${SAFE_FILE}" "obs://${BUCKET}/${PREFIX}/${SAFE_FILE}"
         echo "Uploaded to obs://${BUCKET}/${PREFIX}/${SAFE_FILE}"

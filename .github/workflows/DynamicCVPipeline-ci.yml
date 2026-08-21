@@ -34,17 +34,6 @@ jobs:
       - name: Add git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Cache build dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.triton/llvm
-            ~/.triton/json
-            ~/.triton/nvidia
-            ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-dcv-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/llvm_patch/*.patch') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-dcv
-
       - name: Checkout base
         uses: actions/checkout@v4
         with:
@@ -59,6 +48,26 @@ jobs:
           fetch-depth: 0
           submodules: "true"
           path: pr
+
+      # The obs-cache action is a local action living in the repo, which is
+      # checked out under base/ — so restore runs after the base checkout
+      # and references ./base/.github/actions/obs-cache (the BASE branch's
+      # action, not PR code).
+      - name: Cache build dependencies
+        uses: ./base/.github/actions/obs-cache
+        with:
+          mode: restore-only
+          path: |
+            ~/.triton/llvm
+            ~/.triton/json
+            ~/.triton/nvidia
+            ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-dcv-${{ hashFiles('base/cmake/llvm-hash.txt', 'base/cmake/json-version.txt', 'base/cmake/nvidia-toolchain-version.json', 'base/third_party/ascend/llvm_patch/*.patch') }}
+          # restore-keys only supports exact matches (not the prefix matching
+          # of actions/cache@v4) — passed anyway so a future version can fall
+          # back to the newest cache with this prefix.
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-dcv
+          # No obs-ak / obs-sk → restore only (PR-safe).
 
       - name: Build triton-ascend base
         shell: bash
@@ -127,6 +136,22 @@ jobs:
           fi
           cd "$SETUP_DIR"
           MAX_JOBS="$NUM_PROCS" python ${SETUP_PY} bdist_wheel --dist-dir="${GITHUB_WORKSPACE}/pr/wheelhouse"
+
+      # This workflow has no push trigger, so the cache only refreshes on
+      # manual workflow_dispatch runs. PR events restore only.
+      - name: Save cache to OBS
+        if: github.event_name == 'workflow_dispatch'
+        uses: ./base/.github/actions/obs-cache
+        with:
+          mode: save-only
+          path: |
+            ~/.triton/llvm
+            ~/.triton/json
+            ~/.triton/nvidia
+            ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-dcv-${{ hashFiles('base/cmake/llvm-hash.txt', 'base/cmake/json-version.txt', 'base/cmake/nvidia-toolchain-version.json', 'base/third_party/ascend/llvm_patch/*.patch') }}
+          obs-ak: ${{ secrets.OBS_AK_14 }}
+          obs-sk: ${{ secrets.OBS_SK_14 }}
 
       - name: generate ttadapter
         shell: bash
