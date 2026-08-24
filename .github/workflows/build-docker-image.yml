@@ -33,10 +33,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cann_version: [8.5.0, 9.0.0-beta.2]
-        chip_type: [910b, a3]
-        os: [ubuntu22.04]
-        python_version: ["3.10", "3.11"]
+        # cann_version: [8.5.0, 9.0.0-beta.2]
+        # chip_type: [910b, a3]
+        # os: [ubuntu22.04]
+        # python_version: ["3.10", "3.11"]
         include:
           # a5 (Ascend 950) line: CANN 9.1.0 / py3.12 / torch 2.12.0.
           # Kept out of the cross-product dims above so it doesn't generate
