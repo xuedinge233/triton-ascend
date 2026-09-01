@@ -8,11 +8,18 @@ ADD "${llvm_dir}" /source/llvm-project
 ENV SCCACHE_DIR="/sccache"
 ENV SCCACHE_CACHE_SIZE="2G"
 
-RUN dnf install --assumeyes llvm-toolset
+# Install clang/lld directly: llvm-toolset is a Software Collection whose
+# binaries are not on PATH in the stock Docker Hub image (plain clang/lld
+# packages from appstream land in /usr/bin and work on both base images).
+RUN dnf install --assumeyes clang lld
 RUN dnf install --assumeyes python39-pip python39-devel git
 RUN alternatives --set python3 /usr/bin/python3.9
 
-ENV PIP_INDEX_URL=http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple \
+# Overridable pip index so public-network builds (GitHub-hosted runners) can
+# point at pypi.org.  Defaults to the cluster-internal mirror used by
+# self-hosted CI.
+ARG PIP_INDEX_URL=http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_TRUSTED_HOST=cache-service.nginx-pypi-cache.svc.cluster.local
 
 RUN python3 -m pip install --upgrade pip
