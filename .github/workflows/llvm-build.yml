@@ -31,37 +31,28 @@ jobs:
   build:
     name: Build on ${{ matrix.config.runner }}
     runs-on: ${{ matrix.config.runs_on }}
-    # Cann container provides buildx remote builder config for AlmaLinux.
-    # Ubuntu native builds also work inside this container.
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-a3-ubuntu22.04-py3.12
-    timeout-minutes: 240
-    env:
-      PIP_INDEX_URL: http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple
-      PIP_TRUSTED_HOST: cache-service.nginx-pypi-cache.svc.cluster.local
+    # TEMP: switched to GitHub-hosted runners because self-hosted runner
+    # resources are unavailable.  The CANN container is dropped: it pulls from
+    # an internal SWR registry and its env points pip/apt at cluster-local
+    # mirrors that do not resolve on GitHub runners.
+    timeout-minutes: 330
 
     strategy:
       fail-fast: false
       matrix:
         config:
-        - {runner: 'Ubuntu 22.04', runs_on: 'linux-amd64-cpu-4', target-os: 'ubuntu', arch: 'x64'}
-        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'linux-aarch64-cpu-4', target-os: 'ubuntu', arch: 'arm64'}
-        - {runner: 'AlmaLinux 8', runs_on: 'linux-amd64-cpu-4', target-os: 'almalinux', arch: 'x64'}
-        - {runner: 'AlmaLinux 8 ARM64', runs_on: 'linux-aarch64-cpu-4', target-os: 'almalinux', arch: 'arm64'}
+        - {runner: 'Ubuntu 22.04', runs_on: 'ubuntu-22.04', target-os: 'ubuntu', arch: 'x64'}
+        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'ubuntu', arch: 'arm64'}
+        - {runner: 'AlmaLinux 8', runs_on: 'ubuntu-22.04', target-os: 'almalinux', arch: 'x64'}
+        - {runner: 'AlmaLinux 8 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'almalinux', arch: 'arm64'}
 
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v5
 
-    - name: Config mirrors & install build tools
-      if: matrix.config.target-os == 'ubuntu'
-      shell: bash
-      run: |
-        sed -i 's|http://archive.ubuntu.com|http://cache-service.nginx-pypi-cache.svc.cluster.local:8081|g' /etc/apt/sources.list 2>/dev/null || true
-        sed -i 's|http://ports.ubuntu.com|http://cache-service.nginx-pypi-cache.svc.cluster.local:8081|g' /etc/apt/sources.list 2>/dev/null || true
-        sed -i 's|http://security.ubuntu.com|http://cache-service.nginx-pypi-cache.svc.cluster.local:8081|g' /etc/apt/sources.list 2>/dev/null || true
-        apt-get update
-        apt-get install -y --no-install-recommends clang lld
+    # TEMP: mirror rewrite removed — it pointed apt at the cluster-local
+    # mirror, which does not resolve on GitHub runners.  The runner image
+    # ships clang; lld is installed in the step below.
 
     - name: Fetch LLVM Commit Hash
       shell: bash
@@ -126,7 +117,7 @@ jobs:
         if command -v python3 2>/dev/null; then
           python3 --version
         elif command -v apt-get 2>/dev/null; then
-          apt-get update && apt-get install -y python3 python3-pip
+          sudo apt-get update && sudo apt-get install -y python3 python3-pip
           python3 --version
         else
           echo "ERROR: cannot find or install python3"
@@ -140,26 +131,35 @@ jobs:
         mkdir -p ${{ env.SCCACHE_DIR }}
         rm -rf ${{ env.SCCACHE_DIR }}/*
 
-    - name: Install lld (Ubuntu)
-      # Linking mlir-opt with GNU ld needs 6-10GB and gets OOM-killed on the
-      # 4-CPU pods.  lld uses far less memory and is required by
-      # -DCMAKE_LINKER=lld in the configure step below.
+    - name: Enable Cache
+      # TEMP: back to actions/cache — the obs-cache action is only available
+      # in the self-hosted runner environment.
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
+        restore-keys: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-
+
+    - name: Free disk space
+      # GitHub x64 runners only have ~14GB of free disk; the LLVM Release
+      # build dir alone needs ~30GB+ (the almalinux Docker build needs more).
+      uses: jlumbroso/free-disk-space@main
+      with:
+        large-packages: true
+        docker-images: true
+
+    - name: Install clang & lld (Ubuntu)
+      # Must run AFTER free-disk-space: that action removes the image's
+      # preinstalled clang/LLVM packages.  Linking mlir-opt with GNU ld needs
+      # 6-10GB and gets OOM-killed on the 4-CPU pods; lld uses far less
+      # memory and is required by -DCMAKE_LINKER=lld below.
       if: matrix.config.target-os == 'ubuntu'
       shell: bash
       run: |
-        apt-get install -y lld-15
-        update-alternatives --install /usr/bin/lld lld /usr/bin/lld-15 100
-
-    - name: Enable Cache
-      uses: ./llvm-build/.github/actions/obs-cache
-      with:
-        mode: restore-only
-        path: ${{ env.SCCACHE_DIR }}
-        key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
-        # restore-keys only supports exact matches (not the prefix matching
-        # of actions/cache@v4) — passed anyway so a future version can fall
-        # back to the newest cache with this prefix.
-        restore-keys: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends clang lld-15
+        sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-15 100
+        command -v clang clang++ lld || { echo "compiler install failed"; exit 1; }
 
     - name: Configure, Build, and Install LLVM (Ubuntu)
       if: matrix.config.target-os == 'ubuntu'
@@ -206,8 +206,12 @@ jobs:
         context: .
         file: .github/workflows/build/almalinux.Dockerfile
         build-args: |
-          BASE_IMAGE=swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/almalinux:8.10-20250411
+          # TEMP: SWR registry requires auth and is unreachable from GitHub
+          # runners; Docker Hub publishes the same 8.10 tag (multi-arch).
+          BASE_IMAGE=almalinux:8.10-20250411
           llvm_dir=llvm-project
+          # TEMP: override the Dockerfile's default cluster-internal pip mirror
+          PIP_INDEX_URL=https://pypi.org/simple
         target: output
         outputs: type=local,dest=.
 
@@ -233,7 +237,7 @@ jobs:
           ${{ github.workspace }}/llvm-*-${{ matrix.config.target-os }}-${{ matrix.config.arch }}.tar.gz
 
     - name: Setup obsutil and upload to OBS
-      if: github.event_name == 'push' && github.repository == 'triton-lang/triton-ascend'
+      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
       shell: bash
       env:
         AK: ${{ secrets.OBS_AK }}
@@ -254,18 +258,9 @@ jobs:
         obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
         obsutil/obsutil cp -u "${{ env.llvm_install_dir }}.tar.gz" obs://triton-ascend-artifacts/llvm-builds/
 
-    # TODO before upstream merge: add `&& github.repository ==
-    # 'triton-lang/triton-ascend'` to the condition so fork pushes cannot
-    # write into the shared cache bucket (left open for fork validation).
-    - name: Save Cache to OBS
-      if: github.event_name == 'push'
-      uses: ./llvm-build/.github/actions/obs-cache
-      with:
-        mode: save-only
-        path: ${{ env.SCCACHE_DIR }}
-        key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
-        obs-ak: ${{ secrets.OBS_AK_14 }}
-        obs-sk: ${{ secrets.OBS_SK_14 }}
+    # TEMP: Save Cache to OBS removed — it needs the obs-cache action and
+    # OBS_AK_14/SK secrets, neither of which exists on this fork when running
+    # on GitHub-hosted runners.  Re-add when self-hosted runners return.
 
     - name: Dump Sccache Statistics
       run: sccache --show-stats

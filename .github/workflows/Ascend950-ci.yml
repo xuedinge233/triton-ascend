@@ -2,6 +2,7 @@ name: Ascend950 CI
 
 on:
   pull_request_target:
+    branches: ['feature/simd-simt-compile-mode']
     paths: &paths
       # Source code
       - 'python/**'
@@ -24,7 +25,7 @@ on:
       # CI itself
       - '.github/workflows/Ascend950-ci.yml'
   push:
-    branches: [main, 'release/**', '**-dev']
+    branches: ['feature/simd-simt-compile-mode']
     paths: *paths
 
 concurrency:
