@@ -408,3 +408,4 @@ jobs:
           mv obsutil_linux_* obsutil
           obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
           obsutil/obsutil rm -r -f "obs://triton-ascend-artifacts/triton-ascend/${PR_NUM}/" || true
+#test
