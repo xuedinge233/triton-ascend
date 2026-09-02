@@ -28,6 +28,7 @@ on:
     branches: ['feature/simd-simt-compile-mode']
     paths: *paths
 
+#test
 concurrency:
   # PR runs key on PR number (cancel earlier pushes); branch-push runs key on
   # SHA so distinct merges don't cancel each other.
