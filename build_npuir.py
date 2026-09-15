@@ -71,11 +71,87 @@ def _is_submodule_initialized(dir_path):
     return dir_path.is_dir() and (dir_path / "CMakeLists.txt").exists()
 
 
-def _init_npuir_repo():
-    """Initialize the AscendNPU-IR submodule and its nested submodules.
+_NPUIR_SOURCES_BASE_URL = (
+    "https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com"
+    "/npuir-sources"
+)
 
-    AscendNPU-IR depends on LLVM and Torch-MLIR, which are pulled in as
-    nested submodules, hence the recursive update.
+
+def _nested_submodule_gitlinks(npuir_dir):
+    """Map {relative_path: sha} for the nested submodules the npuir pin records."""
+    out = subprocess.check_output(
+        ["git", "ls-tree", "HEAD", "third-party/"],
+        cwd=str(npuir_dir),
+        text=True,
+    )
+    links = {}
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 4:
+            links[fields[3]] = fields[2]
+    return links
+
+
+def _fetch_nested_via_sha(npuir_dir, path, sha):
+    """Fallback: fetch one nested repo at its exact SHA.
+
+    Direct depth-1 fetches of an exact commit SHA work where branch clones do
+    not (gitcode serves `want <sha>` requests but the self-hosted network
+    fails on branch clones).
+    """
+    url = subprocess.check_output(
+        ["git", "-C", str(npuir_dir), "config", "-f", ".gitmodules",
+         "--get", f"submodule.{path}.url"],
+        text=True,
+    ).strip()
+    dest = npuir_dir / path
+    shutil.rmtree(dest, ignore_errors=True)
+    subprocess.check_call(["git", "init", "-q", str(dest)])
+    subprocess.check_call(["git", "-C", str(dest), "remote", "add", "origin", url])
+    subprocess.check_call(["git", "-C", str(dest), "fetch", "--depth", "1", "origin", sha])
+    subprocess.check_call(["git", "-C", str(dest), "checkout", "-q", "FETCH_HEAD"])
+
+
+def _init_nested_submodule_sources(npuir_dir):
+    """Fetch the nested submodule sources (llvm-project, torch-mlir, shmem).
+
+    Preferred: download pre-archived tarballs published by the wheels.yml
+    prepare-npuir-sources job (reliable from the CI network). Fallback: direct
+    depth-1 SHA fetches from the gitcode remotes.
+    """
+    links = _nested_submodule_gitlinks(npuir_dir)
+    if not links:
+        raise RuntimeError("No nested submodules recorded in the AscendNPU-IR pin.")
+    for path, sha in links.items():
+        name = Path(path).name
+        dest = npuir_dir / path
+        if _is_submodule_initialized(dest):
+            _log(f"{path} already initialized, skipping")
+            continue
+        tarfile = _THIS_DIR / f"{name}-{sha}.tar.gz"
+        url = f"{_NPUIR_SOURCES_BASE_URL}/{name}-{sha}.tar.gz"
+        _log(f"Downloading {name} @ {sha} from {url}")
+        try:
+            _run_with_retry(["curl", "-fL", "--connect-timeout", "30",
+                             url, "-o", str(tarfile)])
+        except Exception as exc:
+            _log(f"Tarball download failed ({exc}); falling back to direct SHA fetch.")
+            _fetch_nested_via_sha(npuir_dir, path, sha)
+            continue
+        subprocess.check_call(["tar", "xzf", str(tarfile),
+                               "-C", str(npuir_dir / "third-party")])
+        tarfile.unlink(missing_ok=True)
+        if not _is_submodule_initialized(dest):
+            raise RuntimeError(f"{path} unpack failed: {dest} has no source tree.")
+
+
+def _init_npuir_repo():
+    """Initialize the AscendNPU-IR submodule and its nested submodule sources.
+
+    AscendNPU-IR depends on LLVM and Torch-MLIR. The recursive gitcode clone
+    is not reliable from the CI network, so the nested sources come from
+    pre-archived tarballs (see wheels.yml prepare-npuir-sources) with a
+    direct-SHA-fetch fallback.
     """
     _log("Initializing AscendNPU-IR repository ...")
     if not _is_git_repo(_THIS_DIR):
@@ -94,21 +170,12 @@ def _init_npuir_repo():
         "third_party/ascend/AscendNPU-IR",
     ], cwd=_THIS_DIR)
 
-    # Then recursively initialize its nested submodules (LLVM, Torch-MLIR).
-    if _is_submodule_initialized(_NPUIR_DIR):
-        _run_with_retry([
-            "git",
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-        ], cwd=_NPUIR_DIR)
-    else:
-        raise RuntimeError(f"AscendNPU-IR submodule initialization failed: {_NPUIR_DIR} is not git repository.")
-
     if not _is_submodule_initialized(_NPUIR_DIR):
-        raise RuntimeError(f"AscendNPU-IR initialization failed: {_NPUIR_DIR} is still empty.")
+        raise RuntimeError(f"AscendNPU-IR submodule initialization failed: {_NPUIR_DIR} is not git repository.")
     _log("AscendNPU-IR repository initialized.")
+
+    _init_nested_submodule_sources(_NPUIR_DIR)
+    _log("Nested submodule sources ready.")
 
 
 def _build_and_package_bisheng(repo_dir, bisheng_compiler_path, build_type="Release", rebuild=True):
@@ -177,18 +244,35 @@ def _copy_artifacts():
         _log(f"warning: bitcode dir not found: {bc_src_dir}")
 
 
+def _patch_npuir_templates(repo_dir):
+    """Apply the public-compiler compatibility patches to the npuir templates.
+
+    See .github/workflows/build/patch-npuir-templates.py for details: public
+    bisheng compilers lack the CCE_PRINT_CC / CCE_DEBUG_NAME markers, do not
+    print uint64_t, and cannot link the SIMT debug variant.
+    """
+    patch_script = _THIS_DIR / ".github" / "workflows" / "build" / "patch-npuir-templates.py"
+    if not patch_script.exists():
+        raise RuntimeError(f"Patch script not found: {patch_script}")
+    _log(f"Patching npuir templates with {patch_script}")
+    subprocess.check_call([sys.executable, str(patch_script), str(repo_dir)])
+
+
 def build_npuir():
-    _log("Step 1/5: checking disk space ...")
+    _log("Step 1/6: checking disk space ...")
     _check_disk_space()
 
-    _log("Step 2/5: locating bisheng compiler ...")
+    _log("Step 2/6: locating bisheng compiler ...")
     bisheng_compiler_path = (_get_ascend_path() / "tools" / "bisheng_compiler" / "bin")
     _log(f"bisheng compiler: {bisheng_compiler_path}")
 
-    _log("Step 3/5: initializing code repositories ...")
+    _log("Step 3/6: initializing code repositories ...")
     _init_npuir_repo()
 
-    _log("Step 4/5: building and packaging ...")
+    _log("Step 4/6: patching templates for public compilers ...")
+    _patch_npuir_templates(_NPUIR_DIR)
+
+    _log("Step 5/6: building and packaging ...")
     _build_and_package_bisheng(
         _NPUIR_DIR,
         bisheng_compiler_path=bisheng_compiler_path,
@@ -196,6 +280,6 @@ def build_npuir():
         rebuild=True,
     )
 
-    _log("Step 5/5: copying artifacts ...")
+    _log("Step 6/6: copying artifacts ...")
     _copy_artifacts()
     _log("All done.")
