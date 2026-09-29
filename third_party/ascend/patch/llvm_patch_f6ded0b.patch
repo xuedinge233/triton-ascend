@@ -1,0 +1,268 @@
+diff --git a/mlir/include/mlir/IR/OperationSupport.h b/mlir/include/mlir/IR/OperationSupport.h
+index 1ff7c56..7b4c32a 100644
+--- a/mlir/include/mlir/IR/OperationSupport.h
++++ b/mlir/include/mlir/IR/OperationSupport.h
+@@ -1208,6 +1208,11 @@ public:
+   /// Always print operations in the generic form.
+   OpPrintingFlags &printGenericOpForm(bool enable = true);
+ 
++  /// Print syntax accepted by the LLVM 19-based BishengIR consumer. Only
++  /// spelling and unsupported optimization hints are adapted; semantic
++  /// features such as unsigned loops and custom indexing maps are preserved.
++  OpPrintingFlags &printBishengIRCompat(bool enable = true);
++
+   /// Skip printing regions.
+   OpPrintingFlags &skipRegions(bool skip = true);
+ 
+@@ -1252,7 +1257,9 @@ public:
+   bool shouldPrintDebugInfoPrettyForm() const;
+ 
+   /// Return if operations should be printed in the generic form.
+-  bool shouldPrintGenericOpForm() const;
++  bool shouldPrintGenericOpForm(Operation *op = nullptr) const;
++
++  bool shouldPrintBishengIRCompat() const { return printBishengIRCompatFlag; }
+ 
+   /// Return if regions should be skipped.
+   bool shouldSkipRegions() const;
+@@ -1274,6 +1281,8 @@ public:
+   bool shouldUseNameLocAsPrefix() const;
+ 
+ private:
++  bool printBishengIRCompatFlag = false;
++
+   /// Elide large elements attributes if the number of elements is larger than
+   /// the upper limit.
+   std::optional<int64_t> elementsAttrElementLimit;
+diff --git a/mlir/lib/AsmParser/Parser.cpp b/mlir/lib/AsmParser/Parser.cpp
+index 82bdb84..73530c3 100644
+--- a/mlir/lib/AsmParser/Parser.cpp
++++ b/mlir/lib/AsmParser/Parser.cpp
+@@ -1498,6 +1498,12 @@ Operation *OperationParser::parseGenericOperation() {
+ 
+   consumeToken(Token::string);
+ 
++  // Accept our BishengIR interchange spelling as the native LLVM 22 operation.
++  // This retains ToBufferOp's interfaces and folding when re-reading a dump;
++  // no second bufferization operation or lowering pass is needed.
++  if (name == "bufferization.to_memref")
++    name = "bufferization.to_buffer";
++
+   OperationState result(srcLocation, name);
+   CleanupOpStateRegions guard{result};
+ 
+diff --git a/mlir/lib/IR/AsmPrinter.cpp b/mlir/lib/IR/AsmPrinter.cpp
+index 3d19c5a..72363d8 100644
+--- a/mlir/lib/IR/AsmPrinter.cpp
++++ b/mlir/lib/IR/AsmPrinter.cpp
+@@ -179,6 +179,10 @@ struct AsmPrinterOptions {
+       llvm::cl::desc("Skip op verification when using custom printers"),
+       llvm::cl::Hidden};
+ 
++  llvm::cl::opt<bool> printBishengIRCompatOpt{
++      "mlir-print-bishengir-compat", llvm::cl::init(false),
++      llvm::cl::desc("Print compatible text for the LLVM 19 BishengIR consumer")};
++
+   llvm::cl::opt<bool> printLocalScopeOpt{
+       "mlir-print-local-scope", llvm::cl::init(false),
+       llvm::cl::desc("Print with local scope and inline information (eliding "
+@@ -233,6 +237,7 @@ OpPrintingFlags::OpPrintingFlags()
+   printDebugInfoFlag = clOptions->printDebugInfoOpt;
+   printDebugInfoPrettyFormFlag = clOptions->printPrettyDebugInfoOpt;
+   printGenericOpFormFlag = clOptions->printGenericOpFormOpt;
++  printBishengIRCompatFlag = clOptions->printBishengIRCompatOpt;
+   assumeVerifiedFlag = clOptions->assumeVerifiedOpt;
+   printLocalScope = clOptions->printLocalScopeOpt;
+   skipRegionsFlag = clOptions->skipRegionsOpt;
+@@ -278,6 +283,11 @@ OpPrintingFlags &OpPrintingFlags::printGenericOpForm(bool enable) {
+   return *this;
+ }
+ 
++OpPrintingFlags &OpPrintingFlags::printBishengIRCompat(bool enable) {
++  printBishengIRCompatFlag = enable;
++  return *this;
++}
++
+ /// Always skip Regions.
+ OpPrintingFlags &OpPrintingFlags::skipRegions(bool skip) {
+   skipRegionsFlag = skip;
+@@ -357,8 +367,56 @@ bool OpPrintingFlags::shouldPrintDebugInfoPrettyForm() const {
+ }
+ 
+ /// Return if operations should be printed in the generic form.
+-bool OpPrintingFlags::shouldPrintGenericOpForm() const {
+-  return printGenericOpFormFlag;
++static bool needsBishengIRGenericForm(Operation *op) {
++  if (!op)
++    return false;
++  StringRef name = op->getName().getStringRef();
++  // Explicit types in generic assembly preserve layouts, memory spaces and
++  // access contracts without changing LLVM 22 bufferization operations.
++  if (name == "bufferization.to_tensor")
++    return op->getNumOperands() == 1 && op->getNumResults() == 1 &&
++           isa<BaseMemRefType>(op->getOperand(0).getType()) &&
++           isa<TensorType>(op->getResult(0).getType());
++  if (name == "bufferization.to_buffer")
++    return op->getNumOperands() == 1 && op->getNumResults() == 1 &&
++           isa<TensorType>(op->getOperand(0).getType()) &&
++           isa<BaseMemRefType>(op->getResult(0).getType());
++  return name == "arith.trunci" || name == "cf.cond_br" ||
++         name == "llvm.load" || name == "llvm.store" ||
++         name == "llvm.inttoptr" || name == "llvm.intr.assume";
++}
++
++static OperandRange getBishengIROperands(Operation *op) {
++  auto operands = op->getOperands();
++  if (op->getName().getStringRef() == "llvm.intr.assume" && !operands.empty())
++    return operands.take_front(1);
++  return operands;
++}
++
++static NamedAttrList getBishengIRAttrs(Operation *op) {
++  StringRef name = op->getName().getStringRef();
++  NamedAttrList attrs(op->getAttrs());
++  // These facts only restrict originally defined executions or guide
++  // optimization. Omitting them is conservative; never drop semantic
++  // properties such as unsignedCmp, indexing_maps or tail_call_kind.
++  if (name == "arith.trunci")
++    attrs.erase("overflowFlags");
++  if (name == "cf.cond_br")
++    attrs.erase("branch_weights");
++  if (name == "llvm.load" || name == "llvm.store" || name == "llvm.inttoptr") {
++    attrs.erase("dereferenceable");
++    attrs.erase("invariantGroup");
++  }
++  if (name == "llvm.intr.assume") {
++    attrs.erase("op_bundle_tags");
++    attrs.set("op_bundle_sizes", DenseI32ArrayAttr::get(op->getContext(), {}));
++  }
++  return attrs;
++}
++
++bool OpPrintingFlags::shouldPrintGenericOpForm(Operation *op) const {
++  return printGenericOpFormFlag ||
++         (printBishengIRCompatFlag && needsBishengIRGenericForm(op));
+ }
+ 
+ /// Return if Region should be skipped.
+@@ -706,7 +764,7 @@ public:
+       initializer.visit(op->getLoc(), /*canBeDeferred=*/true);
+ 
+     // If requested, always print the generic form.
+-    if (!printerFlags.shouldPrintGenericOpForm()) {
++    if (!printerFlags.shouldPrintGenericOpForm(op)) {
+       op->getName().printAssembly(op, *this, /*defaultDialect=*/"");
+       return;
+     }
+@@ -726,13 +784,23 @@ private:
+     }
+ 
+     // Visit all the types used in the operation.
+-    for (Type type : op->getOperandTypes())
++    bool compat = printerFlags.shouldPrintBishengIRCompat() &&
++                  needsBishengIRGenericForm(op);
++    auto operands = compat ? getBishengIROperands(op) : op->getOperands();
++    for (Type type : operands.getTypes())
+       printType(type);
+     for (Type type : op->getResultTypes())
+       printType(type);
+ 
+-    // Consider the attributes of the operation for aliases.
+-    for (const NamedAttribute &attr : op->getAttrs())
++    // Collect only attributes that will actually be printed. Otherwise an
++    // omitted LLVM 22 hint can leak through an unused attribute alias.
++    auto attrs = op->getAttrs();
++    NamedAttrList compatibleAttrs;
++    if (compat) {
++      compatibleAttrs = getBishengIRAttrs(op);
++      attrs = compatibleAttrs.getAttrs();
++    }
++    for (const NamedAttribute &attr : attrs)
+       printAttribute(attr.getValue());
+   }
+ 
+@@ -1607,7 +1675,7 @@ void SSANameState::numberValuesInRegion(Region &region) {
+     setValueName(arg, name);
+   };
+ 
+-  if (!printerFlags.shouldPrintGenericOpForm()) {
++  if (!printerFlags.shouldPrintGenericOpForm(region.getParentOp())) {
+     if (Operation *op = region.getParentOp()) {
+       if (auto asmInterface = dyn_cast<OpAsmOpInterface>(op))
+         asmInterface.getAsmBlockArgumentNames(region, setBlockArgNameFn);
+@@ -1699,7 +1767,7 @@ void SSANameState::numberValuesInOp(Operation &op) {
+     blockNames[block] = {-1, name};
+   };
+ 
+-  if (!printerFlags.shouldPrintGenericOpForm()) {
++  if (!printerFlags.shouldPrintGenericOpForm(&op)) {
+     if (OpAsmOpInterface asmInterface = dyn_cast<OpAsmOpInterface>(&op)) {
+       asmInterface.getAsmBlockNames(setBlockNameFn);
+       asmInterface.getAsmResultNames(setResultNameFn);
+@@ -3687,7 +3755,7 @@ void OperationPrinter::printUserIDs(Operation *user, bool prefixComma) {
+ 
+ void OperationPrinter::printCustomOrGenericOp(Operation *op) {
+   // If requested, always print the generic form.
+-  if (!printerFlags.shouldPrintGenericOpForm()) {
++  if (!printerFlags.shouldPrintGenericOpForm(op)) {
+     // Check to see if this is a known operation. If so, use the registered
+     // custom printer hook.
+     if (auto opInfo = op->getRegisteredInfo()) {
+@@ -3717,10 +3785,16 @@ void OperationPrinter::printCustomOrGenericOp(Operation *op) {
+ }
+ 
+ void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
++  StringRef name = op->getName().getStringRef();
++  bool compat = printerFlags.shouldPrintBishengIRCompat() &&
++                needsBishengIRGenericForm(op);
++  auto operands = compat ? getBishengIROperands(op) : op->getOperands();
+   if (printOpName)
+-    printEscapedString(op->getName().getStringRef());
++    printEscapedString(compat && name == "bufferization.to_buffer"
++                           ? "bufferization.to_memref"
++                           : name);
+   os << '(';
+-  interleaveComma(op->getOperands(), [&](Value value) { printValueID(value); });
++  interleaveComma(operands, [&](Value value) { printValueID(value); });
+   os << ')';
+ 
+   // For terminators, print the list of successors and their operands.
+@@ -3732,10 +3806,12 @@ void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
+   }
+ 
+   // Print the properties.
+-  if (Attribute prop = op->getPropertiesAsAttribute()) {
+-    os << " <";
+-    Impl::printAttribute(prop);
+-    os << '>';
++  if (!compat) {
++    if (Attribute prop = op->getPropertiesAsAttribute()) {
++      os << " <";
++      Impl::printAttribute(prop);
++      os << '>';
++    }
+   }
+ 
+   // Print regions.
+@@ -3748,13 +3824,17 @@ void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
+     os << ')';
+   }
+ 
+-  printOptionalAttrDict(op->getPropertiesStorage()
+-                            ? llvm::to_vector(op->getDiscardableAttrs())
+-                            : op->getAttrs());
++  if (compat) {
++    printOptionalAttrDict(getBishengIRAttrs(op).getAttrs());
++  } else {
++    printOptionalAttrDict(op->getPropertiesStorage()
++                              ? llvm::to_vector(op->getDiscardableAttrs())
++                              : op->getAttrs());
++  }
+ 
+   // Print the type signature of the operation.
+   os << " : ";
+-  printFunctionalType(op);
++  printFunctionalType(operands.getTypes(), op->getResultTypes());
+ }
+ 
+ void OperationPrinter::printBlockName(Block *block) {
