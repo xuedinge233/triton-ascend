@@ -342,7 +342,7 @@ index e0cf353da207..560b5e074ab6 100644
      return true;
  
 diff --git a/mlir/lib/Dialect/Bufferization/IR/BufferizationOps.cpp b/mlir/lib/Dialect/Bufferization/IR/BufferizationOps.cpp
-index 56ff2121e462..f3ef674743e2 100644
+index 56ff2121e462..e988006be0ea 100644
 --- a/mlir/lib/Dialect/Bufferization/IR/BufferizationOps.cpp
 +++ b/mlir/lib/Dialect/Bufferization/IR/BufferizationOps.cpp
 @@ -13,6 +13,7 @@
@@ -407,7 +407,7 @@ index 56ff2121e462..f3ef674743e2 100644
  void mlir::bufferization::populateDynamicDimSizes(
      OpBuilder &b, Location loc, Value shapedValue,
      SmallVector<Value> &dynamicDims) {
-@@ -750,6 +798,98 @@ bool ToTensorOp::isWritable(Value value, const AnalysisState &state) {
+@@ -750,6 +798,92 @@ bool ToTensorOp::isWritable(Value value, const AnalysisState &state) {
    return getWritable();
  }
  
@@ -494,19 +494,13 @@ index 56ff2121e462..f3ef674743e2 100644
 +   else
 +     _odsPrinter << type;
 +  }
-+  // Unlike the reference's unconditional elision, keep result types that
-+  // cannot be reconstructed from the memref without losing type information.
-+  if (!llvm::isa<BaseMemRefType>(getBuffer().getType()) ||
-+      memref::getTensorTypeFromMemRefType(getBuffer().getType()) !=
-+          getResult().getType())
-+    _odsPrinter << " to " << getResult().getType();
 +}
 +
 +
  OpFoldResult ToTensorOp::fold(FoldAdaptor) {
    if (auto toBuffer = getBuffer().getDefiningOp<ToBufferOp>())
      // Approximate alias analysis by conservatively folding only when no there
-@@ -757,6 +897,12 @@ OpFoldResult ToTensorOp::fold(FoldAdaptor) {
+@@ -757,6 +891,12 @@ OpFoldResult ToTensorOp::fold(FoldAdaptor) {
      if (toBuffer->getBlock() == this->getOperation()->getBlock() &&
          toBuffer->getNextNode() == this->getOperation())
        return toBuffer.getTensor();
@@ -519,7 +513,7 @@ index 56ff2121e462..f3ef674743e2 100644
    return {};
  }
  
-@@ -1198,6 +1344,117 @@ void bufferization::populateDeallocOpCanonicalizationPatterns(
+@@ -1198,6 +1338,107 @@ void bufferization::populateDeallocOpCanonicalizationPatterns(
                 RemoveAllocDeallocPairWhenNoOtherUsers>(context);
  }
  
@@ -550,20 +544,10 @@ index 56ff2121e462..f3ef674743e2 100644
 +        tensorCastOperand.getOperand().getType());
 +    if (!srcTensorType)
 +      return failure();
-+    // Preserve the destination's address interpretation and read-only contract.
-+    // A default-layout/default-space memref may not be cast back to the result.
-+    auto dstMemrefType = dyn_cast<MemRefType>(toMemref.getType());
-+    if (!dstMemrefType)
-+      return failure();
-+    auto memrefType = MemRefType::get(
-+        srcTensorType.getShape(), srcTensorType.getElementType(),
-+        dstMemrefType.getLayout(), dstMemrefType.getMemorySpace());
-+    if (!memref::CastOp::areCastCompatible(TypeRange{memrefType},
-+                                         TypeRange{dstMemrefType}))
-+      return failure();
++    auto memrefType = MemRefType::get(srcTensorType.getShape(),
++                                      srcTensorType.getElementType());
 +    Value memref = rewriter.create<ToMemrefOp>(toMemref.getLoc(), memrefType,
-+                                               tensorCastOperand.getOperand(),
-+                                               toMemref.getReadOnly());
++                                               tensorCastOperand.getOperand());
 +    rewriter.replaceOpWithNewOp<memref::CastOp>(toMemref, toMemref.getType(),
 +                                                memref);
 +    return success();
@@ -1407,36 +1391,98 @@ index 5d08cccb4faa..139c62c1b807 100644
  //===----------------------------------------------------------------------===//
  // LLVMDialect initialization, type parsing, and registration.
  //===----------------------------------------------------------------------===//
+diff --git a/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp b/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
+index 59013a23b3e3..61fe0d3c7b91 100644
+--- a/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
++++ b/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
+@@ -3898,33 +3898,14 @@ static FailureOr<ArrayAttr> parseIndexingMapsAttr(OpAsmParser &parser) {
+ }
+ 
+ ParseResult MatmulOp::parse(OpAsmParser &parser, OperationState &result) {
+-  FailureOr<ArrayAttr> indexingMapsAttr = parseIndexingMapsAttr(parser);
+-  if (failed(indexingMapsAttr))
+-    return failure();
+-
+-  if (*indexingMapsAttr == nullptr) {
+-    auto indexingMapAttrs = llvm::map_to_vector(
+-        MatmulOp::getDefaultIndexingMaps(parser.getContext()),
+-        [](AffineMap map) -> Attribute { return AffineMapAttr::get(map); });
+-    indexingMapsAttr = parser.getBuilder().getArrayAttr(indexingMapAttrs);
+-  }
+-
+-  result.addAttribute("indexing_maps", *indexingMapsAttr);
+-  return parseNamedStructuredOp(parser, result, MatmulOp::getNumRegionArgs(),
+-                                MatmulOp::getRegionBuilder());
++  return ::parseNamedStructuredOp(parser, result,
++    MatmulOp::getNumRegionArgs(), MatmulOp::getRegionBuilder());
+ }
+-
+ void MatmulOp::print(OpAsmPrinter &p) {
+-  SmallVector<Attribute, 3> indexingMaps = llvm::map_to_vector<3>(
+-      MatmulOp::getDefaultIndexingMaps(getContext()),
+-      [](AffineMap map) -> Attribute { return AffineMapAttr::get(map); });
+-  if (!llvm::equal(getIndexingMaps(), indexingMaps))
+-    p << " indexing_maps = " << llvm::interleaved_array(getIndexingMaps());
+-
+-  std::array<StringRef, 3> elidedAttrs = {
+-      "operandSegmentSizes", "linalg.memoized_indexing_maps", "indexing_maps"};
+-  printNamedStructuredOp(p, getOperation(), getInputs(), getOutputs(),
+-                         elidedAttrs);
++  ::printNamedStructuredOp(p, getOperation(), getInputs(), getOutputs(),{"operandSegmentSizes",
++                       // See generated code in
++                       // LinalgNamedStructuredOps.yamlgen.cpp.inc
++                       "linalg.memoized_indexing_maps"});
+ }
+ 
+ /// Verify the user defined indexing maps.
+@@ -4678,11 +4659,10 @@ void BatchMatmulOp::print(OpAsmPrinter &p) {
+   SmallVector<Attribute, 3> indexingMaps = llvm::map_to_vector<3>(
+       BatchMatmulOp::getDefaultIndexingMaps(getContext()),
+       [](AffineMap map) -> Attribute { return AffineMapAttr::get(map); });
+-  if (!llvm::equal(getIndexingMaps(), indexingMaps))
+-    p << " indexing_maps = " << llvm::interleaved_array(getIndexingMaps());
+ 
++  // Elide indexing_maps (LLVM 20 default print has no attr/keyword).
+   std::array<StringRef, 3> elidedAttrs = {
+-      "operandSegmentSizes", "linalg.memoized_indexing_maps", "indexing_maps"};
++      "operandSegmentSizes", "indexing_maps", "linalg.memoized_indexing_maps"};
+   ::printNamedStructuredOp(p, getOperation(), getInputs(), getOutputs(),
+                            elidedAttrs);
+ }
+diff --git a/mlir/lib/Dialect/SCF/IR/SCF.cpp b/mlir/lib/Dialect/SCF/IR/SCF.cpp
+index a9da6c2c8320..712a210a61d4 100644
+--- a/mlir/lib/Dialect/SCF/IR/SCF.cpp
++++ b/mlir/lib/Dialect/SCF/IR/SCF.cpp
+@@ -486,9 +486,6 @@ static void printInitializationList(OpAsmPrinter &p,
+ }
+ 
+ void ForOp::print(OpAsmPrinter &p) {
+-  if (getUnsignedCmp())
+-    p << " unsigned";
+-
+   p << " " << getInductionVar() << " = " << getLowerBound() << " to "
+     << getUpperBound() << " step " << getStep();
+ 
 diff --git a/mlir/lib/IR/AsmPrinter.cpp b/mlir/lib/IR/AsmPrinter.cpp
-index 3d19c5ad8fbc..67973b68a3c3 100644
+index 3d19c5ad8fbc..3796f218087e 100644
 --- a/mlir/lib/IR/AsmPrinter.cpp
 +++ b/mlir/lib/IR/AsmPrinter.cpp
-@@ -3733,9 +3733,27 @@ void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
+@@ -3733,9 +3733,17 @@ void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
  
    // Print the properties.
    if (Attribute prop = op->getPropertiesAsAttribute()) {
 -    os << " <";
 -    Impl::printAttribute(prop);
 -    os << '>';
-+    // Only the condition-only assume needs the reference's property elision.
-+    // Other ops and nonempty bundles need their segmentation metadata intact.
-+    auto bundleSizes = op->getAttrOfType<DenseI32ArrayAttr>("op_bundle_sizes");
-+    if (op->getName().getStringRef() == "llvm.intr.assume" &&
-+        op->getNumOperands() == 1 && bundleSizes && bundleSizes.empty()) {
-+      auto dict = cast<DictionaryAttr>(prop);
-+      SmallVector<NamedAttribute> filtered;
-+      for (NamedAttribute attr : dict) {
-+        if (attr.getName() != "op_bundle_sizes")
-+          filtered.push_back(attr);
-+      }
-+      if (!filtered.empty()) {
-+        os << " <";
-+        Impl::printAttribute(DictionaryAttr::get(op->getContext(), filtered));
-+        os << '>';
-+      }
-+    } else {
++    auto dict = cast<DictionaryAttr>(prop);
++    SmallVector<NamedAttribute> filtered;
++    for (NamedAttribute attr : dict) {
++      if (attr.getName() != "op_bundle_sizes")
++        filtered.push_back(attr);
++    }
++    if (!filtered.empty()) {
 +      os << " <";
-+      Impl::printAttribute(prop);
++      Impl::printAttribute(DictionaryAttr::get(op->getContext(), filtered));
 +      os << '>';
 +    }
    }
