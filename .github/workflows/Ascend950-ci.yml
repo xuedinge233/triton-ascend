@@ -2,7 +2,6 @@ name: Ascend950 CI
 
 on:
   pull_request_target:
-    branches: ['feature/simd-simt-compile-mode']
     paths: &paths
       # Source code
       - 'python/**'
