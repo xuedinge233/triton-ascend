@@ -77,18 +77,44 @@ jobs:
       - name: Add git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      # hashFiles() is evaluated by the runner process, which on this runner
+      # cannot see the job container's workspace (the same split that breaks
+      # local `uses: ./...` actions) — it would silently return an empty
+      # hash. Compute the dependency hash inside the container instead.
+      - name: Compute dependency hash
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            for f in cmake/llvm-hash.txt \
+                     cmake/json-version.txt \
+                     cmake/nvidia-toolchain-version.json \
+                     third_party/ascend/patch/llvm_patch_*.patch; do
+              if [ -e "$f" ]; then sha256sum "$f"; fi
+            done
+          } | sha256sum | cut -d' ' -f1 | sed 's/^/hash=/' >> "$GITHUB_OUTPUT"
+
+      # Invoked as a plain script instead of `uses: ./.github/actions/obs-cache`:
+      # on this self-hosted runner the job container's workspace is not shared
+      # with the runner process, so local actions fail to resolve ("Can't find
+      # 'action.yml' ... Did you forget to run actions/checkout?") even though
+      # checkout succeeded. `run:` steps execute inside the container and see
+      # the checkout fine. Same logic, same security model (no credentials on
+      # PR events → restore only).
       - name: Cache build dependencies
-        uses: ./.github/actions/obs-cache
-        with:
-          mode: restore-only
-          path: |
+        shell: bash
+        env:
+          OBS_CACHE_MODE: restore-only
+          OBS_CACHE_KEY: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ steps.deps.outputs.hash }}
+          OBS_CACHE_RESTORE_KEYS: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels
+          OBS_CACHE_PATHS: |
             ~/.triton/llvm
             ~/.triton/json
             ~/.triton/nvidia
             ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels
-          # No obs-ak / obs-sk → restore only, no credentials (PR-safe).
+          # No OBS_AK / OBS_SK → restore only, no credentials (PR-safe).
+        run: bash .github/actions/obs-cache/obs-cache.sh
 
       - name: Build triton-ascend wheel
         shell: bash
@@ -140,19 +166,22 @@ jobs:
       # OBS credentials out of this job on PR events (the step never runs,
       # so the secrets are never evaluated), preserving the security model
       # above. PRs only ever read the cache.
+      # Plain-script invocation for the same runner reason as the restore
+      # step above (local `uses: ./...` cannot be resolved by the runner).
       - name: Save cache to OBS
         if: github.event_name == 'push'
-        uses: ./.github/actions/obs-cache
-        with:
-          mode: save-only
-          path: |
+        shell: bash
+        env:
+          OBS_CACHE_MODE: save-only
+          OBS_CACHE_KEY: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ steps.deps.outputs.hash }}
+          OBS_CACHE_PATHS: |
             ~/.triton/llvm
             ~/.triton/json
             ~/.triton/nvidia
             ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
-          obs-ak: ${{ secrets.OBS_AK_14 }}
-          obs-sk: ${{ secrets.OBS_SK_14 }}
+          OBS_AK: ${{ secrets.OBS_AK_14 }}
+          OBS_SK: ${{ secrets.OBS_SK_14 }}
+        run: bash .github/actions/obs-cache/obs-cache.sh
 
   # ── Pipeline Tests ────────────────────────────────────────────────────────
   # This job never checks out PR code — it only downloads the binary wheel
