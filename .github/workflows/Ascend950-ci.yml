@@ -1,6 +1,22 @@
 name: Ascend950 CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Link test: skip Wheels Build, feed Pipeline Tests an existing wheel'
+        type: boolean
+        default: true
+      wheel_url:
+        description: 'URL of a prebuilt .whl to use when skip_build is set (required in that mode)'
+        required: false
+        type: string
+        default: ''
+      test_key:
+        description: 'Optional OBS/BY namespace key — digits (PR-like) or 40-hex SHA; defaults to run SHA'
+        required: false
+        type: string
+        default: ''
   pull_request_target:
     paths: &paths
       # Source code
@@ -49,6 +65,9 @@ jobs:
 
   wheels-build:
     name: Wheels Build
+    # workflow_dispatch with skip_build bypasses this job for link tests; the
+    # Pipeline Tests job then sources the wheel from inputs.wheel_url instead.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_build
     timeout-minutes: 120
     runs-on: linux-amd64-cpu-8
     container:
@@ -77,18 +96,44 @@ jobs:
       - name: Add git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      # hashFiles() is evaluated by the runner process, which on this runner
+      # cannot see the job container's workspace (the same split that breaks
+      # local `uses: ./...` actions) — it would silently return an empty
+      # hash. Compute the dependency hash inside the container instead.
+      - name: Compute dependency hash
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            for f in cmake/llvm-hash.txt \
+                     cmake/json-version.txt \
+                     cmake/nvidia-toolchain-version.json \
+                     third_party/ascend/patch/llvm_patch_*.patch; do
+              if [ -e "$f" ]; then sha256sum "$f"; fi
+            done
+          } | sha256sum | cut -d' ' -f1 | sed 's/^/hash=/' >> "$GITHUB_OUTPUT"
+
+      # Invoked as a plain script instead of `uses: ./.github/actions/obs-cache`:
+      # on this self-hosted runner the job container's workspace is not shared
+      # with the runner process, so local actions fail to resolve ("Can't find
+      # 'action.yml' ... Did you forget to run actions/checkout?") even though
+      # checkout succeeded. `run:` steps execute inside the container and see
+      # the checkout fine. Same logic, same security model (no credentials on
+      # PR events → restore only).
       - name: Cache build dependencies
-        uses: ./.github/actions/obs-cache
-        with:
-          mode: restore-only
-          path: |
+        shell: bash
+        env:
+          OBS_CACHE_MODE: restore-only
+          OBS_CACHE_KEY: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ steps.deps.outputs.hash }}
+          OBS_CACHE_RESTORE_KEYS: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels
+          OBS_CACHE_PATHS: |
             ~/.triton/llvm
             ~/.triton/json
             ~/.triton/nvidia
             ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels
-          # No obs-ak / obs-sk → restore only, no credentials (PR-safe).
+          # No OBS_AK / OBS_SK → restore only, no credentials (PR-safe).
+        run: bash .github/actions/obs-cache/obs-cache.sh
 
       - name: Build triton-ascend wheel
         shell: bash
@@ -140,19 +185,22 @@ jobs:
       # OBS credentials out of this job on PR events (the step never runs,
       # so the secrets are never evaluated), preserving the security model
       # above. PRs only ever read the cache.
+      # Plain-script invocation for the same runner reason as the restore
+      # step above (local `uses: ./...` cannot be resolved by the runner).
       - name: Save cache to OBS
         if: github.event_name == 'push'
-        uses: ./.github/actions/obs-cache
-        with:
-          mode: save-only
-          path: |
+        shell: bash
+        env:
+          OBS_CACHE_MODE: save-only
+          OBS_CACHE_KEY: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ steps.deps.outputs.hash }}
+          OBS_CACHE_PATHS: |
             ~/.triton/llvm
             ~/.triton/json
             ~/.triton/nvidia
             ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ runner.arch }}-cann8.5.0-ubuntu22.04-910b-py3.11-wheels-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json', 'third_party/ascend/patch/llvm_patch_*.patch') }}
-          obs-ak: ${{ secrets.OBS_AK_14 }}
-          obs-sk: ${{ secrets.OBS_SK_14 }}
+          OBS_AK: ${{ secrets.OBS_AK_14 }}
+          OBS_SK: ${{ secrets.OBS_SK_14 }}
+        run: bash .github/actions/obs-cache/obs-cache.sh
 
   # ── Pipeline Tests ────────────────────────────────────────────────────────
   # This job never checks out PR code — it only downloads the binary wheel
@@ -163,7 +211,13 @@ jobs:
     name: Pipeline Tests
     needs: wheels-build
     timeout-minutes: 360
-    if: needs.wheels-build.result == 'success'
+    # Also runs standalone on workflow_dispatch with skip_build: wheels-build
+    # then reports 'skipped' and the wheel comes from inputs.wheel_url.
+    if: >-
+      always() &&
+      (needs.wheels-build.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.skip_build &&
+        needs.wheels-build.result == 'skipped'))
     runs-on: linux-aarch64-cpu-1
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend/triton:github_action
@@ -182,6 +236,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
           HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          KEY_OVERRIDE: ${{ inputs.test_key }}
         run: |
           set -euo pipefail
 
@@ -202,6 +257,15 @@ jobs:
             KIND="branch"
           fi
 
+          # workflow_dispatch link tests can pin the OBS/BY namespace key.
+          if [ -n "${KEY_OVERRIDE:-}" ]; then
+            if [[ ! "${KEY_OVERRIDE}" =~ ^([1-9][0-9]*|[0-9a-f]{40})$ ]]; then
+              echo "test_key must be a positive integer (PR-like) or a 40-char SHA" >&2
+              exit 1
+            fi
+            OBS_KEY="${KEY_OVERRIDE}"
+          fi
+
           {
             echo "pr_id=${OBS_KEY}"
             echo "kind=${KIND}"
@@ -216,7 +280,25 @@ jobs:
             echo "__EOF__"
           } >> "$GITHUB_ENV"
 
+      - name: Fetch wheel from URL (skip-build mode)
+        if: github.event_name == 'workflow_dispatch' && inputs.skip_build
+        id: wheelsrc
+        shell: bash
+        env:
+          WHEEL_URL: ${{ inputs.wheel_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WHEEL_URL}" ]; then
+            echo "skip_build requires inputs.wheel_url" >&2
+            exit 1
+          fi
+          mkdir -p wheelhouse
+          WHEEL_BASE="$(basename "${WHEEL_URL%%\?*}")"
+          curl -fL "${WHEEL_URL}" -o "wheelhouse/${WHEEL_BASE}"
+          echo "name=${WHEEL_BASE}" >> "$GITHUB_OUTPUT"
+
       - name: Download wheel artifact
+        if: github.event_name != 'workflow_dispatch' || !inputs.skip_build
         uses: actions/download-artifact@v4
         with:
           name: cibw-wheels-manylinux_2_28_x86_64-wheels-upload
@@ -255,7 +337,7 @@ jobs:
           PR_ID:              ${{ steps.ctx.outputs.pr_id }}
           URL_B:              ${{ github.server_url }}/${{ github.repository }}
           BRANCH_B:           ${{ steps.ctx.outputs.branch_b }}
-          WHEEL_NAME:         ${{ needs.wheels-build.outputs.wheel_name }}
+          WHEEL_NAME:         ${{ needs.wheels-build.outputs.wheel_name || steps.wheelsrc.outputs.name }}
         run: |
           set -euo pipefail
 
