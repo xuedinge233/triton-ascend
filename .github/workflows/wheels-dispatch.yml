@@ -59,7 +59,11 @@ jobs:
         run: |
           set -euo pipefail
           # Comment text is untrusted: it only ever reaches this shell through
-          # the BODY env var, never through ${{ }} interpolation.
+          # the BODY env var, never through expression interpolation. (Keep
+          # this script free of dollar-double-brace sequences even in bash
+          # comments: Actions parses every such template in the run block
+          # before the shell sees it, and an empty or malformed one rejects
+          # the whole workflow file.)
           FIRST=$(printf '%s' "$BODY" | head -n1 | tr -d '\r')
           NAME=$(printf '%s' "$FIRST" | awk '{print $1}')
           if [ "$NAME" != "/build-wheels" ]; then
