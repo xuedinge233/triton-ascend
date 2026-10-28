@@ -98,6 +98,8 @@ jobs:
           ARCH_IN: ${{ inputs.arch }}
           PYTHON_IN: ${{ inputs.python }}
           BRANCH_IN: ${{ inputs.branch }}
+          PUBLISH_RAW: ${{ inputs.publish }}
+          PUBLISH_FMT: ${{ format('{0}', inputs.publish) }}
         run: |
           set -euo pipefail
           ALL_CONFIG='[
@@ -143,6 +145,12 @@ jobs:
             exit 1
           fi
           echo "config=${CONFIG} python=${PYTHON} branch=${BRANCH}"
+          # Audit: the publish gate lives on Publish-Wheels
+          # (format('{0}', inputs.publish) != 'false'), a job that only runs
+          # where real builds happen. Echo both renderings here so the gate
+          # semantics are verifiable from any run, forks included.
+          if [ "${PUBLISH_FMT}" != "false" ]; then GATE=OPEN; else GATE=CLOSED; fi
+          echo "publish input: raw='${PUBLISH_RAW}' formatted='${PUBLISH_FMT}' -> gate ${GATE}"
           {
             echo "config=${CONFIG}"
             echo "python=${PYTHON}"
