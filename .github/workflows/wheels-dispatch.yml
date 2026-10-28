@@ -1,0 +1,209 @@
+name: Wheels Dispatch (ChatOps)
+
+# Bridge for external services that cannot hold a token with `actions:write`.
+# GitHub secrets are write-only: BOT_TOKEN's value never leaves the secret
+# store, so the privileged dispatch call happens HERE (inside a workflow run
+# that can reference the secret), and the caller only needs its own GitHub
+# identity with write access to this repo.
+#
+# Usage — comment on ANY issue (a dedicated pinned "wheel build trigger"
+# issue works well); the command must be on the first line:
+#
+#   /build-wheels                                    full matrix + publish
+#   /build-wheels arch=x86_64 python=cp312 publish=false
+#
+# Recognised key=value args (all optional; defaults shown):
+#   arch=all        all | x86_64 | aarch64
+#   python=all      all | comma-separated cp310/cp311/cp312/cp313
+#   branch=all      all | main        (keep in sync with the wheels.yml
+#                                      workflow_dispatch `branch` options)
+#   publish=true    true | false
+#   ref=<default>   which wheels.yml revision to dispatch against
+#
+# This workflow checks the commenter's repo permission (write+ required —
+# unlike rebuild-tasks.yml there is no PR-author exception, because a build
+# costs shared NPU/CPU runner time), dispatches wheels.yml with BOT_TOKEN,
+# and replies on the issue with the created run's URL: the dispatch API
+# itself answers 204 with no run id, so this reply is how the caller tracks
+# the build.
+
+on:
+  issue_comment:
+    types: [created]
+
+# Serialize dispatches per issue; never cancel — each comment is a request
+# and must either dispatch or get a reply.
+concurrency:
+  group: wheels-dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  dispatch:
+    # Coarse prefilter only; the exact first-token match happens in Parse.
+    if: startsWith(github.event.comment.body, '/build-wheels')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      issues: write     # reply with the run URL / rejection reason
+    env:
+      REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - name: Parse command
+        id: cmd
+        env:
+          BODY: ${{ github.event.comment.body }}
+          DEFAULT_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Comment text is untrusted: it only ever reaches this shell through
+          # the BODY env var, never through ${{ }} interpolation.
+          FIRST=$(printf '%s' "$BODY" | head -n1 | tr -d '\r')
+          NAME=$(printf '%s' "$FIRST" | awk '{print $1}')
+          if [ "$NAME" != "/build-wheels" ]; then
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "match=true" >> "$GITHUB_OUTPUT"
+
+          error() { echo "error_msg=$1" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          ARCH=all PYTHON=all BRANCH=all PUBLISH=true REF="$DEFAULT_REF"
+          ARGS="${FIRST#"$NAME"}"
+          for kv in $ARGS; do
+            key="${kv%%=*}"; val="${kv#*=}"
+            [ "$key" != "$kv" ] || error "argument '${kv}' is not key=value"
+            case "$key" in
+              arch)    ARCH="$val" ;;
+              python)  PYTHON="$val" ;;
+              branch)  BRANCH="$val" ;;
+              publish) PUBLISH="$val" ;;
+              ref)     REF="$val" ;;
+              *)       error "unknown argument '${key}'" ;;
+            esac
+          done
+
+          case "$ARCH" in
+            all|x86_64|aarch64) ;;
+            *) error "invalid arch '${ARCH}' (all|x86_64|aarch64)" ;;
+          esac
+          case "$BRANCH" in
+            all|main) ;;
+            *) error "invalid branch '${BRANCH}' (all|main)" ;;
+          esac
+          case "$PUBLISH" in
+            true|false) ;;
+            *) error "invalid publish '${PUBLISH}' (true|false)" ;;
+          esac
+          if [ "$PYTHON" != "all" ]; then
+            if tr ',' '\n' <<<"$PYTHON" | grep -qvE '^(cp310|cp311|cp312|cp313)$'; then
+              error "invalid python '${PYTHON}' (all, or comma-separated cp310/cp311/cp312/cp313)"
+            fi
+          fi
+          if ! grep -qE '^[A-Za-z0-9._/-]+$' <<<"$REF"; then
+            error "invalid ref '${REF}'"
+          fi
+
+          {
+            echo "arch=${ARCH}"
+            echo "python=${PYTHON}"
+            echo "branch=${BRANCH}"
+            echo "publish=${PUBLISH}"
+            echo "ref=${REF}"
+            echo "error_msg="
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stop if not an exact /build-wheels command
+        if: steps.cmd.outputs.match != 'true'
+        run: echo "Not a /build-wheels command; exiting."
+
+      - name: Check author permission
+        id: perm
+        if: steps.cmd.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ACTOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          # Same collaborator check as rebuild-tasks.yml. Org members inherit
+          # their team's repo permission, which this API resolves as well.
+          LEVEL=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" \
+                    --jq .permission 2>/dev/null || echo none)
+          echo "level=${LEVEL}" >> "$GITHUB_OUTPUT"
+          case "$LEVEL" in
+            admin|write|maintain) echo "ok=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                    echo "ok=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Dispatch wheels.yml and locate the created run
+        id: run
+        if: >-
+          steps.cmd.outputs.match == 'true' &&
+          steps.cmd.outputs.error_msg == '' &&
+          steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          # Parsed (and validated) values travel through env, so no part of
+          # the comment body is ever interpolated into the shell script.
+          REF: ${{ steps.cmd.outputs.ref }}
+          ARCH: ${{ steps.cmd.outputs.arch }}
+          PYTHON: ${{ steps.cmd.outputs.python }}
+          BRANCH: ${{ steps.cmd.outputs.branch }}
+          PUBLISH: ${{ steps.cmd.outputs.publish }}
+        run: |
+          set -euo pipefail
+          BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          export BEFORE
+          gh workflow run wheels.yml --repo "${REPO}" --ref "${REF}" \
+            -f arch="${ARCH}" -f python="${PYTHON}" \
+            -f branch="${BRANCH}" -f publish="${PUBLISH}"
+          echo "Dispatched wheels.yml on ref '${REF}' (arch=${ARCH} python=${PYTHON} branch=${BRANCH} publish=${PUBLISH})"
+          # The dispatch API returns 204 with no run id; poll the runs list
+          # for the run created just now on the requested branch.
+          RUN_URL=""
+          for attempt in $(seq 1 12); do
+            sleep 5
+            RUN_URL=$(gh api "repos/${REPO}/actions/runs?event=workflow_dispatch&per_page=10" \
+              --jq '[.workflow_runs[]
+                     | select(.path == ".github/workflows/wheels.yml")
+                     | select(.head_branch == env.REF)
+                     | select(.created_at >= env.BEFORE)]
+                    | sort_by(.created_at) | last | .html_url // empty' 2>/dev/null || true)
+            [ -n "$RUN_URL" ] && break
+            echo "run not visible yet (attempt ${attempt}/12)..."
+          done
+          echo "run_url=${RUN_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Reply on the issue
+        if: always() && steps.cmd.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          ERROR_MSG: ${{ steps.cmd.outputs.error_msg }}
+          PERM_OK: ${{ steps.perm.outputs.ok }}
+          PERM_LEVEL: ${{ steps.perm.outputs.level }}
+          DISPATCH_OUTCOME: ${{ steps.run.outcome }}
+          RUN_URL: ${{ steps.run.outputs.run_url }}
+          ARGS_SUMMARY: arch=${{ steps.cmd.outputs.arch }} python=${{ steps.cmd.outputs.python }} branch=${{ steps.cmd.outputs.branch }} publish=${{ steps.cmd.outputs.publish }} ref=${{ steps.cmd.outputs.ref }}
+        run: |
+          set -euo pipefail
+          MSG_FILE=$(mktemp)
+          USAGE='Usage: `/build-wheels [arch=all|x86_64|aarch64] [python=all|cp312,...] [branch=all|main] [publish=true|false] [ref=<branch>]` — first line only.'
+          if [ -n "$ERROR_MSG" ]; then
+            printf '❌ `/build-wheels` rejected: %s.\n\n%s\n' "$ERROR_MSG" "$USAGE" > "$MSG_FILE"
+          elif [ "$PERM_OK" != "true" ]; then
+            printf '❌ `/build-wheels` rejected: @%s has permission level `%s`; write access or higher is required to trigger wheel builds.\n' \
+              "$ACTOR" "${PERM_LEVEL:-none}" > "$MSG_FILE"
+          elif [ "$DISPATCH_OUTCOME" = "failure" ] || [ "$DISPATCH_OUTCOME" = "cancelled" ]; then
+            printf '❌ `/build-wheels` for @%s failed to dispatch (%s) — see the workflow job log.\n\n%s\n' \
+              "$ACTOR" "$DISPATCH_OUTCOME" "$USAGE" > "$MSG_FILE"
+          elif [ -n "$RUN_URL" ]; then
+            printf '🚀 Wheels build dispatched by @%s\n\n- Run: %s\n- Inputs: `%s`\n' \
+              "$ACTOR" "$RUN_URL" "$ARGS_SUMMARY" > "$MSG_FILE"
+          else
+            printf '⚠️ `/build-wheels` dispatched by @%s, but the created run was not visible within 60s — check the [Actions tab](https://github.com/%s/actions/workflows/wheels.yml).\n\n- Inputs: `%s`\n' \
+              "$ACTOR" "$REPO" "$ARGS_SUMMARY" > "$MSG_FILE"
+          fi
+          gh issue comment "$ISSUE" --repo "$REPO" --body-file "$MSG_FILE"
