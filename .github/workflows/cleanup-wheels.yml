@@ -1,0 +1,140 @@
+name: Cleanup Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      cutoff_date:
+        description: >-
+          Delete wheels whose build date (the dev/release YYYYMMDD timestamp
+          in the filename) is strictly before this date (format: YYYYMMDD).
+        required: true
+        type: string
+        default: "20261020"
+      dry_run:
+        description: "Dry run: only list what would be deleted, remove nothing"
+        required: false
+        type: boolean
+        default: true
+      obs_dir:
+        description: "OBS directory to clean"
+        required: false
+        type: string
+        default: "obs://ascend-artifcat-packages/pypi/packages/ascend/repos/pypi/nightly/triton-ascend/"
+
+concurrency:
+  group: cleanup-wheels
+  # Never cancel an in-flight cleanup: obsutil rm must run to completion so
+  # the reported deletion count matches what was actually removed.
+  cancel-in-progress: false
+
+permissions: read-all
+
+jobs:
+
+  Cleanup-Wheels:
+    name: Remove outdated wheels from OBS
+    runs-on: linux-amd64-cpu-8
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Setup obsutil
+        shell: bash
+        env:
+          AK: ${{ secrets.NIGHTLY_OBS_AK }}
+          SK: ${{ secrets.NIGHTLY_OBS_SK }}
+        run: |
+          set -eu
+          if [ -z "${AK}" ] || [ -z "${SK}" ]; then
+            echo "OBS credentials are empty."
+            exit 1
+          fi
+          curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_amd64.tar.gz" -o obsutil.tar.gz
+          gzip -t obsutil.tar.gz || { echo "obsutil.tar.gz is not a valid gzip"; exit 1; }
+          tar xzf obsutil.tar.gz
+          rm -f obsutil.tar.gz
+          mv obsutil_linux_* obsutil
+          obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-north-4.myhuaweicloud.com
+
+      - name: Select outdated wheels
+        shell: bash
+        env:
+          OBS_DIR: ${{ github.event.inputs.obs_dir }}
+          CUTOFF: ${{ github.event.inputs.cutoff_date }}
+        run: |
+          set -eu
+          if ! [[ "$CUTOFF" =~ ^[0-9]{8}$ ]]; then
+            echo "cutoff_date must be YYYYMMDD, got: $CUTOFF"
+            exit 1
+          fi
+
+          # List every .whl currently in the directory (non-recursive).
+          obsutil/obsutil ls "${OBS_DIR}" -d -s -limit=0 \
+            | grep -oE '[^/]+\.whl$' \
+            | sort -u > all-wheels.txt
+          total=$(wc -l < all-wheels.txt)
+          echo "Found ${total} wheel(s) in ${OBS_DIR}"
+
+          # A wheel is outdated when the first dev/release date stamp embedded
+          # in its filename (e.g. dev20261022 or +release20260622) is strictly
+          # before the cutoff. Wheels without any recognizable date stamp are
+          # kept and reported separately.
+          : > delete-list.txt
+          : > keep-list.txt
+          : > undated-list.txt
+          while IFS= read -r f; do
+            d=$(printf '%s\n' "$f" \
+              | grep -oE '(dev|release)[0-9]{8}' | head -1 \
+              | grep -oE '[0-9]{8}$' || true)
+            if [ -z "$d" ]; then
+              echo "$f" >> undated-list.txt
+            elif [ "$d" -lt "$CUTOFF" ]; then
+              echo "$f" >> delete-list.txt
+            else
+              echo "$f" >> keep-list.txt
+            fi
+          done < all-wheels.txt
+
+          echo "Would delete $(wc -l < delete-list.txt) wheel(s) (date < ${CUTOFF})"
+          echo "Would keep   $(wc -l < keep-list.txt) wheel(s) (date >= ${CUTOFF})"
+          echo "Undated (always kept): $(wc -l < undated-list.txt)"
+          if [ -s undated-list.txt ]; then
+            cat undated-list.txt
+          fi
+          echo "----- deletion list -----"
+          cat delete-list.txt
+
+      - name: Delete outdated wheels and rebuild index
+        shell: bash
+        env:
+          OBS_DIR: ${{ github.event.inputs.obs_dir }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -eu
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run enabled, nothing deleted."
+            exit 0
+          fi
+          count=$(wc -l < delete-list.txt)
+          i=0
+          while IFS= read -r f; do
+            i=$((i + 1))
+            obsutil/obsutil rm -f "${OBS_DIR}${f}"
+            if [ $((i % 50)) -eq 0 ]; then
+              echo "Deleted ${i}/${count}"
+            fi
+          done < delete-list.txt
+          echo "Deleted ${i}/${count} wheel(s)."
+
+          # Regenerate index.html from the remaining wheels.
+          obsutil/obsutil ls "${OBS_DIR}" -d -s -limit=0 \
+            | grep -oE '[^/]+\.whl$' \
+            | sort -u > files.txt
+          echo "Remaining wheels: $(wc -l < files.txt)"
+          while IFS= read -r f; do
+            printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
+          done < files.txt > index.html
+          obsutil/obsutil cp index.html "${OBS_DIR}"
