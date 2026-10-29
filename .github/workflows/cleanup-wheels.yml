@@ -120,14 +120,26 @@ jobs:
           fi
           count=$(wc -l < delete-list.txt)
           i=0
+          # Tolerate per-object failures (e.g. AccessDenied) so one bad object
+          # does not abort the whole cleanup; failed names are collected and
+          # reported at the end.
+          : > failed-list.txt
           while IFS= read -r f; do
             i=$((i + 1))
-            obsutil/obsutil rm -f "${OBS_DIR}${f}"
+            if ! obsutil/obsutil rm -f "${OBS_DIR}${f}"; then
+              echo "FAILED: $f"
+              echo "$f" >> failed-list.txt
+            fi
             if [ $((i % 50)) -eq 0 ]; then
-              echo "Deleted ${i}/${count}"
+              echo "Processed ${i}/${count}"
             fi
           done < delete-list.txt
-          echo "Deleted ${i}/${count} wheel(s)."
+          failed=$(wc -l < failed-list.txt)
+          echo "Processed ${i}/${count} wheel(s), failed: ${failed}"
+          if [ "$failed" -gt 0 ]; then
+            echo "----- failed objects -----"
+            cat failed-list.txt
+          fi
 
           # Regenerate index.html from the remaining wheels.
           obsutil/obsutil ls "${OBS_DIR}" -d -s -limit=0 \
@@ -138,3 +150,8 @@ jobs:
             printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
           done < files.txt > index.html
           obsutil/obsutil cp index.html "${OBS_DIR}"
+
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::${failed} object(s) could not be deleted; check OBS permissions."
+            exit 1
+          fi
