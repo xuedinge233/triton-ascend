@@ -130,16 +130,40 @@ jobs:
           GH_TOKEN: ${{ secrets.BOT_TOKEN }}
           ACTOR: ${{ github.event.comment.user.login }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Same collaborator check as rebuild-tasks.yml. Org members inherit
           # their team's repo permission, which this API resolves as well.
-          LEVEL=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" \
-                    --jq .permission 2>/dev/null || echo none)
-          echo "level=${LEVEL}" >> "$GITHUB_OUTPUT"
-          case "$LEVEL" in
-            admin|write|maintain) echo "ok=true"  >> "$GITHUB_OUTPUT" ;;
-            *)                    echo "ok=false" >> "$GITHUB_OUTPUT" ;;
-          esac
+          # NOTE: this endpoint needs more than actions:write — the token
+          # must have push visibility on the repo (classic PAT `repo` scope,
+          # or fine-grained with Administration: Read). A token that can only
+          # dispatch gets a 403 here; report that as a config error instead
+          # of mislabeling the commenter as unauthorized.
+          LEVEL=""
+          PERM_ERROR=""
+          if [ -z "${GH_TOKEN}" ]; then
+            PERM_ERROR="BOT_TOKEN secret is not configured on this repo"
+          elif LEVEL=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq .permission 2>/dev/null); then
+            # Whitelist-sanitize: never let raw API responses reach the reply.
+            case "$LEVEL" in
+              admin|write|maintain|read|triage|none) ;;
+              *) LEVEL="none" ;;
+            esac
+          else
+            LEVEL=""
+            PERM_ERROR="collaborator permission API call failed (401/403?) — BOT_TOKEN is invalid, or lacks push visibility on this repo (classic PAT needs repo scope; fine-grained needs Administration: Read in addition to Actions: Read and write)"
+          fi
+          if [ -n "$PERM_ERROR" ]; then
+            echo "error=${PERM_ERROR}" >> "$GITHUB_OUTPUT"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "level=unknown" >> "$GITHUB_OUTPUT"
+            echo "::error::${PERM_ERROR}"
+          else
+            echo "level=${LEVEL}" >> "$GITHUB_OUTPUT"
+            case "$LEVEL" in
+              admin|write|maintain) echo "ok=true"  >> "$GITHUB_OUTPUT" ;;
+              *)                    echo "ok=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
 
       - name: Dispatch wheels.yml and locate the created run
         id: run
@@ -188,6 +212,7 @@ jobs:
           ERROR_MSG: ${{ steps.cmd.outputs.error_msg }}
           PERM_OK: ${{ steps.perm.outputs.ok }}
           PERM_LEVEL: ${{ steps.perm.outputs.level }}
+          PERM_ERROR: ${{ steps.perm.outputs.error }}
           DISPATCH_OUTCOME: ${{ steps.run.outcome }}
           RUN_URL: ${{ steps.run.outputs.run_url }}
           ARGS_SUMMARY: arch=${{ steps.cmd.outputs.arch }} python=${{ steps.cmd.outputs.python }} branch=${{ steps.cmd.outputs.branch }} publish=${{ steps.cmd.outputs.publish }} ref=${{ steps.cmd.outputs.ref }}
@@ -197,6 +222,8 @@ jobs:
           USAGE='Usage: `/build-wheels [arch=all|x86_64|aarch64] [python=all|cp312,...] [branch=all|main] [publish=true|false] [ref=<branch>]` — first line only.'
           if [ -n "$ERROR_MSG" ]; then
             printf '❌ `/build-wheels` rejected: %s.\n\n%s\n' "$ERROR_MSG" "$USAGE" > "$MSG_FILE"
+          elif [ -n "$PERM_ERROR" ]; then
+            printf '❌ `/build-wheels` could not verify permissions: %s.\n' "$PERM_ERROR" > "$MSG_FILE"
           elif [ "$PERM_OK" != "true" ]; then
             printf '❌ `/build-wheels` rejected: @%s has permission level `%s`; write access or higher is required to trigger wheel builds.\n' \
               "$ACTOR" "${PERM_LEVEL:-none}" > "$MSG_FILE"
