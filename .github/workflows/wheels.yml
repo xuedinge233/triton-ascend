@@ -27,6 +27,9 @@ name: Wheels
 #   branch   all | any ref/tag in matrix-prep's ALL_BRANCH, e.g. "main"
 #   publish  true (default) | false — false builds and NPU-tests the wheels
 #            but skips the OBS nightly upload
+#   update_latest  false (default) | true — when true (and publishing), also
+#            refresh the OBS latest/ folder so it mirrors exactly this run's
+#            published wheels; scheduled/push runs never touch latest/
 #
 # Note: dispatches on the same ref share the concurrency group below
 # (cancel-in-progress), so a second dispatch cancels the first.
@@ -56,6 +59,10 @@ on:
         description: "Publish wheels to the OBS nightly repo after tests pass"
         type: boolean
         default: true
+      update_latest:
+        description: "Also refresh the OBS latest/ folder with this run's wheels"
+        type: boolean
+        default: false
   push:
     branches: [release/**]
   pull_request:
@@ -369,6 +376,9 @@ jobs:
           ARCH: ${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}
           PYTHON_TAG: ${{ matrix.python }}
           BRANCH_TAG: ${{ matrix.branch.tag }}
+          # Same format() coercion as the publish gate: 'true'/'false' on
+          # dispatch, '' on push/schedule (which must NOT touch latest/).
+          UPDATE_LATEST: ${{ format('{0}', inputs.update_latest) }}
         run: |
           set -eu
           if [ -z "${AK}" ] || [ -z "${SK}" ]; then
@@ -397,48 +407,59 @@ jobs:
           done < files.txt > index.html
           obsutil/obsutil cp index.html "${OBS_DIR}"
 
-          # ---- latest/ mirror, phase 1: additive copy ----
-          # Each matrix job copies its own wheel(s) into the latest/ subfolder.
-          # Pruning latest/ down to exactly this run's published set and
-          # regenerating latest/index.html happen in the Update-Latest job
-          # after ALL matrix jobs finish — a single pruner, so partial
-          # matrices can never delete each other's files mid-run.
-          LATEST_DIR="${OBS_DIR%/}/latest/"
-          for f in wheelhouse/*.whl; do
-            obsutil/obsutil cp -f -u "$f" "${LATEST_DIR}"
-          done
+          # ---- latest/ mirror, phase 1: additive copy (opt-in) ----
+          # Only when the update_latest dispatch input is true. Each matrix
+          # job copies its own wheel(s) into the latest/ subfolder; pruning
+          # latest/ down to exactly this run's published set and regenerating
+          # latest/index.html happen in the Update-Latest job after ALL matrix
+          # jobs finish — a single pruner, so partial matrices can never
+          # delete each other's files mid-run.
+          if [ "${UPDATE_LATEST}" = "true" ]; then
+            LATEST_DIR="${OBS_DIR%/}/latest/"
+            for f in wheelhouse/*.whl; do
+              obsutil/obsutil cp -f -u "$f" "${LATEST_DIR}"
+            done
 
-          # Manifest of what this job published; Update-Latest prunes latest/
-          # to the union of all manifests from this run. This step is only
-          # reached when the OBS copy above succeeded, so the manifest always
-          # reflects actually-published files.
-          mkdir -p manifests
-          for f in wheelhouse/*.whl; do basename "$f"; done \
-            > "manifests/latest-${ARCH}-${PYTHON_TAG}-${BRANCH_TAG}.txt"
+            # Manifest of what this job published; Update-Latest prunes
+            # latest/ to the union of all manifests from this run. Only
+            # reached when the OBS copies above succeeded, so the manifest
+            # always reflects actually-published files.
+            mkdir -p manifests
+            for f in wheelhouse/*.whl; do basename "$f"; done \
+              > "manifests/latest-${ARCH}-${PYTHON_TAG}-${BRANCH_TAG}.txt"
+          else
+            echo "update_latest='${UPDATE_LATEST}' — skipping latest/ mirror."
+          fi
 
       - name: Upload latest/ manifest
-        if: github.event_name != 'pull_request' && (github.event_name != 'push' || steps.new-commits.outputs.has_new_commits != 'false')
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.event_name != 'push' || steps.new-commits.outputs.has_new_commits != 'false') &&
+          format('{0}', inputs.update_latest) == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: latest-manifest-${{ matrix.config.arch }}-${{ matrix.python }}-${{ matrix.branch.tag }}
           path: manifests/
           retention-days: 7
 
-  # Phase 2 of the latest/ mirror: after every Publish matrix job has copied
-  # its wheels in, prune latest/ to exactly the wheels published by THIS run
-  # (union of the per-job manifests) and regenerate latest/index.html, so
-  # latest/ doubles as a standalone pip index of the most recent build:
+  # Phase 2 of the latest/ mirror (opt-in via the update_latest dispatch
+  # input; never runs on push/schedule): after every Publish matrix job has
+  # copied its wheels in, prune latest/ to exactly the wheels published by
+  # THIS run (union of the per-job manifests) and regenerate
+  # latest/index.html, so latest/ doubles as a standalone find-links page of
+  # the most recent build:
   #   pip install triton-ascend -f <public-url>/latest/
   # If nothing was published (all Publish jobs failed), latest/ is left
   # untouched. A run cancelled mid-publish may leave extra files behind; the
-  # next successful run prunes them (self-healing).
+  # next update_latest run prunes them (self-healing).
   Update-Latest:
     name: Sync OBS latest/ folder
     needs: Publish-Wheels
     if: >-
       github.event_name != 'pull_request' &&
       !cancelled() &&
-      needs.Publish-Wheels.result != 'skipped'
+      needs.Publish-Wheels.result != 'skipped' &&
+      format('{0}', inputs.update_latest) == 'true'
     runs-on: linux-amd64-cpu-8
     timeout-minutes: 30
     steps:
