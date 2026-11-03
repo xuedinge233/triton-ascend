@@ -98,6 +98,8 @@ jobs:
 
           # Regenerate index.html from every .whl currently in the directory
           # (non-recursive, short format), keeping only the basenames.
+          # (The latest/ subfolder shows up in this listing as a "directory"
+          # entry, which the .whl grep below filters out.)
           obsutil/obsutil ls "${OBS_DIR}" -d -s -limit=0 \
             | grep -oE '[^/]+\.whl$' \
             | sort -u > files.txt
@@ -105,3 +107,34 @@ jobs:
             printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
           done < files.txt > index.html
           obsutil/obsutil cp index.html "${OBS_DIR}"
+
+          # ---- latest/ mirror ----
+          # latest/ always holds exactly the files of the most recent upload,
+          # and its own index.html, so it works as a standalone find-links
+          # page (flat link list, not a PEP 503 package dir — use -f):
+          #   pip install triton-ascend -f <public-url>/latest/
+          # Upload first, then prune: latest/ is never empty mid-update, and a
+          # concurrent reader sees either the old or the new file for any
+          # given name.
+          LATEST_DIR="${OBS_DIR%/}/latest/"
+          for f in wheelhouse/*.whl; do
+            obsutil/obsutil cp -f -u "$f" "${LATEST_DIR}"
+          done
+
+          # Prune objects in latest/ that are not part of this upload.
+          for f in wheelhouse/*.whl; do basename "$f"; done | sort -u > latest_new.txt
+          obsutil/obsutil ls "${LATEST_DIR}" -d -s -limit=0 2>/dev/null \
+            | grep -oE '[^/]+\.whl$' \
+            | sort -u > latest_cur.txt || true
+          comm -23 latest_cur.txt latest_new.txt | while IFS= read -r f; do
+            echo "latest/: removing stale $f"
+            obsutil/obsutil rm "${LATEST_DIR}${f}" -f
+          done
+
+          # Regenerate latest/index.html from this upload only.
+          while IFS= read -r f; do
+            printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
+          done < latest_new.txt > latest_index.html
+          obsutil/obsutil cp -f latest_index.html "${LATEST_DIR}index.html"
+          echo "latest/ now contains $(wc -l < latest_new.txt) wheel(s):"
+          cat latest_new.txt

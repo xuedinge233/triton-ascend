@@ -367,6 +367,8 @@ jobs:
           AK: ${{ secrets.NIGHTLY_OBS_AK }}
           SK: ${{ secrets.NIGHTLY_OBS_SK }}
           ARCH: ${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}
+          PYTHON_TAG: ${{ matrix.python }}
+          BRANCH_TAG: ${{ matrix.branch.tag }}
         run: |
           set -eu
           if [ -z "${AK}" ] || [ -z "${SK}" ]; then
@@ -385,6 +387,8 @@ jobs:
 
           # Regenerate index.html from every .whl currently in the directory
           # (non-recursive, short format), keeping only the basenames.
+          # (The latest/ subfolder shows up in this listing as a "directory"
+          # entry, which the .whl grep below filters out.)
           obsutil/obsutil ls "${OBS_DIR}" -d -s -limit=0 \
             | grep -oE '[^/]+\.whl$' \
             | sort -u > files.txt
@@ -392,3 +396,109 @@ jobs:
             printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
           done < files.txt > index.html
           obsutil/obsutil cp index.html "${OBS_DIR}"
+
+          # ---- latest/ mirror, phase 1: additive copy ----
+          # Each matrix job copies its own wheel(s) into the latest/ subfolder.
+          # Pruning latest/ down to exactly this run's published set and
+          # regenerating latest/index.html happen in the Update-Latest job
+          # after ALL matrix jobs finish — a single pruner, so partial
+          # matrices can never delete each other's files mid-run.
+          LATEST_DIR="${OBS_DIR%/}/latest/"
+          for f in wheelhouse/*.whl; do
+            obsutil/obsutil cp -f -u "$f" "${LATEST_DIR}"
+          done
+
+          # Manifest of what this job published; Update-Latest prunes latest/
+          # to the union of all manifests from this run. This step is only
+          # reached when the OBS copy above succeeded, so the manifest always
+          # reflects actually-published files.
+          mkdir -p manifests
+          for f in wheelhouse/*.whl; do basename "$f"; done \
+            > "manifests/latest-${ARCH}-${PYTHON_TAG}-${BRANCH_TAG}.txt"
+
+      - name: Upload latest/ manifest
+        if: github.event_name != 'pull_request' && (github.event_name != 'push' || steps.new-commits.outputs.has_new_commits != 'false')
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-manifest-${{ matrix.config.arch }}-${{ matrix.python }}-${{ matrix.branch.tag }}
+          path: manifests/
+          retention-days: 7
+
+  # Phase 2 of the latest/ mirror: after every Publish matrix job has copied
+  # its wheels in, prune latest/ to exactly the wheels published by THIS run
+  # (union of the per-job manifests) and regenerate latest/index.html, so
+  # latest/ doubles as a standalone pip index of the most recent build:
+  #   pip install triton-ascend -f <public-url>/latest/
+  # If nothing was published (all Publish jobs failed), latest/ is left
+  # untouched. A run cancelled mid-publish may leave extra files behind; the
+  # next successful run prunes them (self-healing).
+  Update-Latest:
+    name: Sync OBS latest/ folder
+    needs: Publish-Wheels
+    if: >-
+      github.event_name != 'pull_request' &&
+      !cancelled() &&
+      needs.Publish-Wheels.result != 'skipped'
+    runs-on: linux-amd64-cpu-8
+    timeout-minutes: 30
+    steps:
+      - name: Download publish manifests
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: latest-manifest-*
+          merge-multiple: true
+          path: manifests
+
+      - name: Prune latest/ to this run and regenerate its index
+        shell: bash
+        env:
+          AK: ${{ secrets.NIGHTLY_OBS_AK }}
+          SK: ${{ secrets.NIGHTLY_OBS_SK }}
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(manifests/latest-*.txt)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No publish manifests this run — leaving latest/ untouched."
+            exit 0
+          fi
+          if [ -z "${AK}" ] || [ -z "${SK}" ]; then
+            echo "OBS credentials are empty."
+            exit 1
+          fi
+          cat "${files[@]}" | sort -u > latest_new.txt
+          # Guard: an empty target set would prune latest/ to nothing. The
+          # manifest check above should make this unreachable, but never bet
+          # a destructive sync on a single upstream condition.
+          if [ ! -s latest_new.txt ]; then
+            echo "Manifest union is empty — leaving latest/ untouched."
+            exit 0
+          fi
+          echo "latest/ target set ($(wc -l < latest_new.txt) wheel(s)):"
+          cat latest_new.txt
+
+          curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_amd64.tar.gz" -o obsutil.tar.gz
+          gzip -t obsutil.tar.gz || { echo "obsutil.tar.gz is not a valid gzip"; exit 1; }
+          tar xzf obsutil.tar.gz
+          rm -f obsutil.tar.gz
+          mv obsutil_linux_* obsutil
+          obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-north-4.myhuaweicloud.com
+
+          OBS_DIR="obs://ascend-artifcat-packages/pypi/packages/ascend/repos/pypi/nightly/triton-ascend/"
+          LATEST_DIR="${OBS_DIR%/}/latest/"
+          # Delete objects in latest/ that are not part of this run's
+          # published set. New files were already copied in by the Publish
+          # jobs, so latest/ is never empty mid-update.
+          obsutil/obsutil ls "${LATEST_DIR}" -d -s -limit=0 2>/dev/null \
+            | grep -oE '[^/]+\.whl$' \
+            | sort -u > latest_cur.txt || true
+          comm -23 latest_cur.txt latest_new.txt | while IFS= read -r f; do
+            echo "latest/: removing stale $f"
+            obsutil/obsutil rm "${LATEST_DIR}${f}" -f
+          done
+
+          while IFS= read -r f; do
+            printf "<a href='%s'>%s</a><br />\n" "$f" "$f"
+          done < latest_new.txt > latest_index.html
+          obsutil/obsutil cp -f latest_index.html "${LATEST_DIR}index.html"
