@@ -1,5 +1,5 @@
 name: Ascend950 CI
-
+#test
 on:
   workflow_dispatch:
     inputs:
