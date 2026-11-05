@@ -5,8 +5,10 @@ on:
     inputs:
       cutoff_date:
         description: >-
-          Delete wheels whose build date (the dev/release YYYYMMDD timestamp
-          in the filename) is strictly before this date (format: YYYYMMDD).
+          Delete wheels by build date (the dev/release YYYYMMDD timestamp in
+          the filename). Either a single date YYYYMMDD (delete everything
+          strictly before it), or a range YYYYMMDD-YYYYMMDD (delete everything
+          inside it, bounds inclusive).
         required: true
         type: string
         default: "20261020"
@@ -66,8 +68,22 @@ jobs:
           CUTOFF: ${{ github.event.inputs.cutoff_date }}
         run: |
           set -eu
-          if ! [[ "$CUTOFF" =~ ^[0-9]{8}$ ]]; then
-            echo "cutoff_date must be YYYYMMDD, got: $CUTOFF"
+          # Accept either a single cutoff date (delete everything strictly
+          # before it) or an inclusive range YYYYMMDD-YYYYMMDD.
+          if [[ "$CUTOFF" =~ ^([0-9]{8})-([0-9]{8})$ ]]; then
+            MODE=range
+            START=${BASH_REMATCH[1]}
+            END=${BASH_REMATCH[2]}
+            if [ "$START" -gt "$END" ]; then
+              echo "cutoff_date range start must not be after end, got: $CUTOFF"
+              exit 1
+            fi
+          elif [[ "$CUTOFF" =~ ^[0-9]{8}$ ]]; then
+            MODE=cutoff
+            START=$CUTOFF
+            END=$CUTOFF
+          else
+            echo "cutoff_date must be YYYYMMDD or YYYYMMDD-YYYYMMDD, got: $CUTOFF"
             exit 1
           fi
 
@@ -79,9 +95,10 @@ jobs:
           echo "Found ${total} wheel(s) in ${OBS_DIR}"
 
           # A wheel is outdated when the first dev/release date stamp embedded
-          # in its filename (e.g. dev20261022 or +release20260622) is strictly
-          # before the cutoff. Wheels without any recognizable date stamp are
-          # kept and reported separately.
+          # in its filename (e.g. dev20261022 or +release20260622) falls into
+          # the requested window: strictly before the cutoff in single-date
+          # mode, or inside [START, END] in range mode. Wheels without any
+          # recognizable date stamp are kept and reported separately.
           : > delete-list.txt
           : > keep-list.txt
           : > undated-list.txt
@@ -91,15 +108,22 @@ jobs:
               | grep -oE '[0-9]{8}$' || true)
             if [ -z "$d" ]; then
               echo "$f" >> undated-list.txt
-            elif [ "$d" -lt "$CUTOFF" ]; then
+            elif [ "$MODE" = "range" ] && [ "$d" -ge "$START" ] && [ "$d" -le "$END" ]; then
+              echo "$f" >> delete-list.txt
+            elif [ "$MODE" = "cutoff" ] && [ "$d" -lt "$START" ]; then
               echo "$f" >> delete-list.txt
             else
               echo "$f" >> keep-list.txt
             fi
           done < all-wheels.txt
 
-          echo "Would delete $(wc -l < delete-list.txt) wheel(s) (date < ${CUTOFF})"
-          echo "Would keep   $(wc -l < keep-list.txt) wheel(s) (date >= ${CUTOFF})"
+          if [ "$MODE" = "range" ]; then
+            echo "Would delete $(wc -l < delete-list.txt) wheel(s) (${START} <= date <= ${END})"
+            echo "Would keep   $(wc -l < keep-list.txt) wheel(s) (date outside ${START}..${END})"
+          else
+            echo "Would delete $(wc -l < delete-list.txt) wheel(s) (date < ${START})"
+            echo "Would keep   $(wc -l < keep-list.txt) wheel(s) (date >= ${START})"
+          fi
           echo "Undated (always kept): $(wc -l < undated-list.txt)"
           if [ -s undated-list.txt ]; then
             cat undated-list.txt
