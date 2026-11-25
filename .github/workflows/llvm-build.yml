@@ -1,266 +1,162 @@
-name: LLVM Build
+name: Publish upstream Ubuntu LLVM for PR 3394
 
 on:
   push:
-    paths:
-      - cmake/llvm-hash.txt
-      - third_party/ascend/patch/llvm_patch_*.patch
-      - .github/workflows/llvm-build.yml
-      - .github/workflows/build/almalinux.Dockerfile
-  pull_request:
-    paths:
-      - cmake/llvm-hash.txt
-      - third_party/ascend/patch/llvm_patch_*.patch
-      - .github/workflows/llvm-build.yml
-      - .github/workflows/build/almalinux.Dockerfile
+    branches: [ci/publish-pr3394-upstream-ubuntu]
+    paths: [.github/workflows/llvm-build.yml]
   workflow_dispatch:
-
-concurrency:
-  group: llvm-build-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  SCCACHE_DIR: ${{ github.workspace }}/sccache
 
 permissions:
   contents: read
-  id-token: write
+  actions: read
+
+concurrency:
+  group: publish-pr3394-upstream-ubuntu
+  cancel-in-progress: false
 
 jobs:
-
-  build:
-    name: Build on ${{ matrix.config.runner }}
-    runs-on: ${{ matrix.config.runs_on }}
-    # TEMP: switched to GitHub-hosted runners because self-hosted runner
-    # resources are unavailable.  The CANN container is dropped: it pulls from
-    # an internal SWR registry and its env points pip/apt at cluster-local
-    # mirrors that do not resolve on GitHub runners.
-    timeout-minutes: 330
-
+  validate:
+    if: github.repository == 'xuedinge233/triton-ascend' && github.ref == 'refs/heads/ci/publish-pr3394-upstream-ubuntu'
     strategy:
       fail-fast: false
       matrix:
-        config:
-        - {runner: 'Ubuntu 22.04', runs_on: 'ubuntu-22.04', target-os: 'ubuntu', arch: 'x64'}
-        - {runner: 'Ubuntu 22.04 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'ubuntu', arch: 'arm64'}
-        - {runner: 'AlmaLinux 8', runs_on: 'ubuntu-22.04', target-os: 'almalinux', arch: 'x64'}
-        - {runner: 'AlmaLinux 8 ARM64', runs_on: 'ubuntu-22.04-arm', target-os: 'almalinux', arch: 'arm64'}
-
+        include:
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            artifact: '14989503421'
+            digest: 61d657ecd3b4ad7dfa50bf8223024cc96352a5c3c9458a4d79b44252684fc536
+          - arch: x64
+            runner: ubuntu-22.04
+            artifact: '14989136537'
+            digest: 8f20e66483f0705627ca687a7f4823b3ff2b77421ab57de28b7d48c4e9ef110f
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      NAME: llvm-f6ded0be-0886b17f-ubuntu-${{ matrix.arch }}
     steps:
-    - name: Checkout Repo
-      uses: actions/checkout@v5
+      - uses: actions/checkout@v4
+        with:
+          ref: cd8c39a7181e6e8a10ebd3926a5d0d3cfe717e9b
+          persist-credentials: false
+      - name: Download the pinned upstream artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ matrix.artifact }}
+          DIGEST: ${{ matrix.digest }}
+        run: |
+          set -eu
+          api=https://api.github.com/repos/triton-lang/triton-ascend/actions
+          curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+            "$api/artifacts/$ARTIFACT/zip" -o "$RUNNER_TEMP/upstream.zip"
+          echo "$DIGEST  $RUNNER_TEMP/upstream.zip" | sha256sum -c -
+          test "$(unzip -Z1 "$RUNNER_TEMP/upstream.zip")" = "$NAME.tar.gz"
+          unzip -q "$RUNNER_TEMP/upstream.zip" -d "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          sha256sum "$NAME.tar.gz" | tee "$NAME.sha256"
+      - name: Test the SDK against both BlockBatching UBSan cases
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          tar -xzf "$NAME.tar.gz" "$NAME/bin/llvm-config" "$NAME/include" \
+            "$NAME/lib/libLLVMSupport.a" "$NAME/lib/libLLVMDemangle.a"
+          export LLVM_SYSPATH="$RUNNER_TEMP/$NAME"
+          libs="$("$LLVM_SYSPATH/bin/llvm-config" --libs support --system-libs)"
+          echo "$libs"
+          case " $libs " in *" -lxml2 "*) exit 1;; esac
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          import tempfile
 
-    # TEMP: mirror rewrite removed — it pointed apt at the cluster-local
-    # mirror, which does not resolve on GitHub runners.  The runner image
-    # ships clang; lld is installed in the step below.
+          source = Path("third_party/ascend/unittest/pytest_ut/test_block_batching_compiler.py").resolve()
+          tree = ast.parse(source.read_text())
+          test, = [node for node in tree.body if getattr(node, "name", "") == "test_checked_batching_values_under_ubsan"]
+          cases = ast.literal_eval(test.decorator_list[0].args[1])
+          assert len(cases) == 2
+          test.decorator_list = []
+          tree.body = [test]
+          namespace = {"__file__": str(source)}
+          exec(compile(tree, str(source), "exec"), namespace)
+          for name, implementations in cases:
+              with tempfile.TemporaryDirectory() as tmp:
+                  namespace[test.name](Path(tmp), name, implementations)
+              print(f"{name} passed", flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-ubuntu-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/llvm-f6ded0be-0886b17f-ubuntu-${{ matrix.arch }}.tar.gz
+            ${{ runner.temp }}/llvm-f6ded0be-0886b17f-ubuntu-${{ matrix.arch }}.sha256
+          compression-level: 0
+          retention-days: 2
 
-    - name: Fetch LLVM Commit Hash
-      shell: bash
-      run: |
-        LLVM_COMMIT_HASH="$(cat cmake/llvm-hash.txt)"
-        echo "Found LLVM commit hash: ${LLVM_COMMIT_HASH}"
-        echo "llvm_commit_hash=${LLVM_COMMIT_HASH}" >> ${GITHUB_ENV}
-
-        SHORT_LLVM_COMMIT_HASH="${LLVM_COMMIT_HASH:0:8}"
-        echo "Short LLVM commit hash: ${SHORT_LLVM_COMMIT_HASH}"
-        echo "short_llvm_commit_hash=${SHORT_LLVM_COMMIT_HASH}" >> ${GITHUB_ENV}
-
-    - name: Compute Patch Hash
-      shell: bash
-      run: |
-        PATCH_DIR="third_party/ascend/patch"
-        if [ -d "${PATCH_DIR}" ] && find "${PATCH_DIR}" -maxdepth 1 -type f -name 'llvm_patch_*.patch' -print -quit | grep -q .; then
-          PATCH_HASH=$(
-            LC_ALL=C find "${PATCH_DIR}" -maxdepth 1 -type f -name 'llvm_patch_*.patch' -print0 \
-              | sort -z \
-              | xargs -0 cat \
-              | sha256sum \
-              | cut -d' ' -f1 \
-              | cut -c1-8
-          )
-        else
-          PATCH_HASH="00000000"
-        fi
-        echo "Patch hash: ${PATCH_HASH}"
-        echo "patch_hash=${PATCH_HASH}" >> ${GITHUB_ENV}
-
-        INSTALL_DIR="llvm-${{ env.short_llvm_commit_hash }}-${PATCH_HASH}-${{ matrix.config.target-os }}-${{ matrix.config.arch }}"
-        echo "LLVM installation directory name: ${INSTALL_DIR}"
-        echo "llvm_install_dir=${INSTALL_DIR}" >> ${GITHUB_ENV}
-
-    - name: Checkout LLVM
-      uses: actions/checkout@v5
-      with:
-        repository: llvm/llvm-project
-        path: llvm-project
-        ref: ${{ env.llvm_commit_hash }}
-
-    - name: Apply LLVM patches
-      shell: bash
-      run: |
-        LLVM_SHORT="${{ env.short_llvm_commit_hash }}"
-        PATCH_DIR="third_party/ascend/patch"
-        if [ -d "${PATCH_DIR}" ]; then
-          cd llvm-project
-          for patchfile in ${GITHUB_WORKSPACE}/${PATCH_DIR}/llvm_patch_*.patch; do
-            if [ -f "$patchfile" ]; then
-              echo "Applying $patchfile..."
-              git apply "$patchfile"
+  publish:
+    needs: validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: verified-ubuntu-*
+          merge-multiple: true
+      - name: Verify both inputs and prepare obsutil
+        run: |
+          set -eu
+          sha256sum -c llvm-*.sha256
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_amd64.tar.gz -o obsutil.tar.gz
+          tar -xzf obsutil.tar.gz
+          install -m 0700 obsutil_linux_amd64*/obsutil "$RUNNER_TEMP/obsutil"
+      - name: Back up both previous versions and publish the verified tarballs
+        env:
+          AK: ${{ secrets.OBS_AK }}
+          SK: ${{ secrets.OBS_SK }}
+        run: |
+          set -euo pipefail
+          obs="$RUNNER_TEMP/obsutil"
+          cfg="$RUNNER_TEMP/obsutil.conf"
+          chmod 700 "$RUNNER_TEMP"
+          trap 'rm -f "$cfg"' EXIT
+          "$obs" config -config="$cfg" -i="$AK" -k="$SK" -e=https://obs.cn-southwest-2.myhuaweicloud.com
+          unset AK SK
+          bucket=obs://triton-ascend-artifacts/llvm-builds
+          public=https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/llvm-builds
+          backup=backups/pr-3394-before-45531025590
+          declare -A old=( [arm64]=d52cc54267015b73e4759f2ecfabe1a5-29 [x64]=26c1996492395e3e2df997082ec2f0a2-30 )
+          declare -A size=( [arm64]=1196819035 [x64]=1235030544 )
+          etag() { curl -fsSI --retry 3 "$1" | awk 'tolower($1)=="etag:" {gsub(/["\r]/,"",$2); print $2}'; }
+          public_sha() { curl -fsSL --retry 3 "$1" -o "$RUNNER_TEMP/readback" && sha256sum "$RUNNER_TEMP/readback" | cut -d' ' -f1; }
+          declare -A todo
+          for arch in arm64 x64; do
+            file=llvm-f6ded0be-0886b17f-ubuntu-$arch.tar.gz
+            current=$(etag "$public/$file")
+            expected=$(cut -d' ' -f1 "${file%.tar.gz}.sha256")
+            if [[ "$current" != "${old[$arch]}" ]]; then
+              test "$(public_sha "$public/$file")" = "$expected"
+              echo "$arch already published and verified"
+              continue
             fi
+            if ! "$obs" stat "$bucket/$backup/$file" -config="$cfg" >/dev/null; then
+              "$obs" cp "$bucket/$file" "$bucket/$backup/$file" -f -config="$cfg"
+            fi
+            # A multipart copy can change the ETag. Compare the actual bytes.
+            curl -fsSL --retry 3 -H "If-Match: \"${old[$arch]}\"" "$public/$file" -o "$RUNNER_TEMP/previous"
+            test "$(stat -c %s "$RUNNER_TEMP/previous")" = "${size[$arch]}"
+            previous=$(sha256sum "$RUNNER_TEMP/previous" | cut -d' ' -f1)
+            "$obs" cp "$bucket/$backup/$file" "$RUNNER_TEMP/backup-$arch" -f -config="$cfg"
+            echo "$previous  $RUNNER_TEMP/backup-$arch" | sha256sum -c -
+            rm "$RUNNER_TEMP/backup-$arch" "$RUNNER_TEMP/previous"
+            echo "Backup verified: $backup/$file SHA256 $previous"
+            todo[$arch]=yes
           done
-          cd ..
-        fi
-
-    - name: Set up Python
-      shell: bash
-      run: |
-        if command -v python3 2>/dev/null; then
-          python3 --version
-        elif command -v apt-get 2>/dev/null; then
-          sudo apt-get update && sudo apt-get install -y python3 python3-pip
-          python3 --version
-        else
-          echo "ERROR: cannot find or install python3"
-          exit 1
-        fi
-
-    - name: Install Prerequisites
-      shell: bash
-      run: |
-        python3 -m pip install cmake ninja sccache
-        mkdir -p ${{ env.SCCACHE_DIR }}
-        rm -rf ${{ env.SCCACHE_DIR }}/*
-
-    - name: Enable Cache
-      # TEMP: back to actions/cache — the obs-cache action is only available
-      # in the self-hosted runner environment.
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.SCCACHE_DIR }}
-        key: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-${{ env.short_llvm_commit_hash }}-${{ env.patch_hash }}
-        restore-keys: ${{ matrix.config.target-os }}-${{ matrix.config.arch }}-
-
-    - name: Free disk space
-      # GitHub x64 runners only have ~14GB of free disk; the LLVM Release
-      # build dir alone needs ~30GB+ (the almalinux Docker build needs more).
-      uses: jlumbroso/free-disk-space@main
-      with:
-        large-packages: true
-        docker-images: true
-
-    - name: Install clang & lld (Ubuntu)
-      # Must run AFTER free-disk-space: that action removes the image's
-      # preinstalled clang/LLVM packages.  Linking mlir-opt with GNU ld needs
-      # 6-10GB and gets OOM-killed on the 4-CPU pods; lld uses far less
-      # memory and is required by -DCMAKE_LINKER=lld below.
-      if: matrix.config.target-os == 'ubuntu'
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends clang lld-15
-        sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-15 100
-        command -v clang clang++ lld || { echo "compiler install failed"; exit 1; }
-
-    - name: Configure, Build, and Install LLVM (Ubuntu)
-      if: matrix.config.target-os == 'ubuntu'
-      shell: bash
-      env:
-        LLVM_INSTALL_DIR: ${{ env.llvm_install_dir }}
-      run: >
-        python3 -m pip install -r llvm-project/mlir/python/requirements.txt
-
-        cmake -GNinja -Bllvm-project/build
-        -DCMAKE_BUILD_TYPE=Release
-        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-        -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-        -DCMAKE_INSTALL_PREFIX="${LLVM_INSTALL_DIR}"
-        -DCMAKE_LINKER=lld
-        -DLLVM_BUILD_UTILS=ON
-        -DLLVM_BUILD_TOOLS=ON
-        -DLLVM_ENABLE_ASSERTIONS=ON
-        -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
-        -DLLVM_ENABLE_PROJECTS="mlir;lld"
-        -DLLVM_INSTALL_UTILS=ON
-        -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
-        -DLLVM_ENABLE_TERMINFO=OFF
-        -DLLVM_ENABLE_ZSTD=OFF
-        -DLLVM_PARALLEL_LINK_JOBS=1
-        llvm-project/llvm
-
-        ninja -C llvm-project/build install
-
-        tar czf "${LLVM_INSTALL_DIR}.tar.gz" "${LLVM_INSTALL_DIR}"
-
-    - name: Ensure sccache dir exists
-      if: matrix.config.target-os == 'almalinux'
-      env:
-        SCCACHE_DIR_PATH: ${{ env.SCCACHE_DIR }}
-      run: |
-        mkdir -p "${SCCACHE_DIR_PATH}"
-        touch "${SCCACHE_DIR_PATH}/.gitkeep"
-
-    - name: Build LLVM Image (AlmaLinux)
-      if: matrix.config.target-os == 'almalinux'
-      uses: docker/build-push-action@v7
-      with:
-        context: .
-        file: .github/workflows/build/almalinux.Dockerfile
-        build-args: |
-          # TEMP: SWR registry requires auth and is unreachable from GitHub
-          # runners; Docker Hub publishes the same 8.10 tag (multi-arch).
-          BASE_IMAGE=almalinux:8.10-20250411
-          llvm_dir=llvm-project
-          # TEMP: override the Dockerfile's default cluster-internal pip mirror
-          PIP_INDEX_URL=https://pypi.org/simple
-        target: output
-        outputs: type=local,dest=.
-
-    - name: Extract LLVM Artifacts (AlmaLinux)
-      if: matrix.config.target-os == 'almalinux'
-      shell: bash
-      env:
-        SCCACHE_DIR_PATH: ${{ env.SCCACHE_DIR }}
-        LLVM_INSTALL_DIR: ${{ env.llvm_install_dir }}
-      run: |
-        rm -rf "${SCCACHE_DIR_PATH}" "${LLVM_INSTALL_DIR}"
-        tar xzf llvm.tar.gz
-        mv install "${LLVM_INSTALL_DIR}"
-        tar czf "${LLVM_INSTALL_DIR}.tar.gz" "${LLVM_INSTALL_DIR}"
-        tar xzf sccache.tar.gz
-        rm -f llvm.tar.gz sccache.tar.gz
-
-    - name: Upload Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: llvm-${{ matrix.config.target-os }}-${{ matrix.config.arch }}
-        path: |
-          ${{ github.workspace }}/llvm-*-${{ matrix.config.target-os }}-${{ matrix.config.arch }}.tar.gz
-
-    - name: Setup obsutil and upload to OBS
-      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-      shell: bash
-      env:
-        AK: ${{ secrets.OBS_AK }}
-        SK: ${{ secrets.OBS_SK }}
-        ARCH: ${{ matrix.config.arch == 'x64' && 'amd64' || 'arm64' }}
-      run: |
-        set -eu
-        if [ -z "${AK}" ] || [ -z "${SK}" ]; then
-          echo "OBS credentials are empty."
-          exit 1
-        fi
-        curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_${ARCH}.tar.gz" -o obsutil.tar.gz
-        gzip -t obsutil.tar.gz || { echo "obsutil.tar.gz is not a valid gzip"; exit 1; }
-        tar xzf obsutil.tar.gz
-        rm -f obsutil.tar.gz
-        mv obsutil_linux_* obsutil
-
-        obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-southwest-2.myhuaweicloud.com
-        obsutil/obsutil cp -u "${{ env.llvm_install_dir }}.tar.gz" obs://triton-ascend-artifacts/llvm-builds/
-
-    # TEMP: Save Cache to OBS removed — it needs the obs-cache action and
-    # OBS_AK_14/SK secrets, neither of which exists on this fork when running
-    # on GitHub-hosted runners.  Re-add when self-hosted runners return.
-
-    - name: Dump Sccache Statistics
-      run: sccache --show-stats
+          for arch in arm64 x64; do
+            [[ -n "${todo[$arch]:-}" ]] || continue
+            file=llvm-f6ded0be-0886b17f-ubuntu-$arch.tar.gz
+            test "$(etag "$public/$file")" = "${old[$arch]}"
+            "$obs" cp "$file" "$bucket/$file" -f -config="$cfg"
+            expected=$(cut -d' ' -f1 "${file%.tar.gz}.sha256")
+            test "$(public_sha "$public/$file")" = "$expected"
+            echo "$file public SHA256 $expected"
+          done
