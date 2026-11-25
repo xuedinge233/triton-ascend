@@ -116,10 +116,10 @@ jobs:
         run: |
           set -euo pipefail
           obs="$RUNNER_TEMP/obsutil"
-          cfg="$RUNNER_TEMP/obsutil.conf"
-          chmod 700 "$RUNNER_TEMP"
+          cfg="$HOME/.obsutilconfig"
+          umask 077
           trap 'rm -f "$cfg"' EXIT
-          "$obs" config -config="$cfg" -i="$AK" -k="$SK" -e=https://obs.cn-southwest-2.myhuaweicloud.com
+          "$obs" config -i="$AK" -k="$SK" -e=https://obs.cn-southwest-2.myhuaweicloud.com
           unset AK SK
           bucket=obs://triton-ascend-artifacts/llvm-builds
           public=https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/llvm-builds
@@ -138,14 +138,14 @@ jobs:
               echo "$arch already published and verified"
               continue
             fi
-            if ! "$obs" stat "$bucket/$backup/$file" -config="$cfg" >/dev/null; then
-              "$obs" cp "$bucket/$file" "$bucket/$backup/$file" -f -config="$cfg"
+            if ! "$obs" stat "$bucket/$backup/$file" >/dev/null; then
+              "$obs" cp "$bucket/$file" "$bucket/$backup/$file" -f
             fi
             # A multipart copy can change the ETag. Compare the actual bytes.
             curl -fsSL --retry 3 -H "If-Match: \"${old[$arch]}\"" "$public/$file" -o "$RUNNER_TEMP/previous"
             test "$(stat -c %s "$RUNNER_TEMP/previous")" = "${size[$arch]}"
             previous=$(sha256sum "$RUNNER_TEMP/previous" | cut -d' ' -f1)
-            "$obs" cp "$bucket/$backup/$file" "$RUNNER_TEMP/backup-$arch" -f -config="$cfg"
+            "$obs" cp "$bucket/$backup/$file" "$RUNNER_TEMP/backup-$arch" -f
             echo "$previous  $RUNNER_TEMP/backup-$arch" | sha256sum -c -
             rm "$RUNNER_TEMP/backup-$arch" "$RUNNER_TEMP/previous"
             echo "Backup verified: $backup/$file SHA256 $previous"
@@ -155,7 +155,7 @@ jobs:
             [[ -n "${todo[$arch]:-}" ]] || continue
             file=llvm-f6ded0be-0886b17f-ubuntu-$arch.tar.gz
             test "$(etag "$public/$file")" = "${old[$arch]}"
-            "$obs" cp "$file" "$bucket/$file" -f -config="$cfg"
+            "$obs" cp "$file" "$bucket/$file" -f
             expected=$(cut -d' ' -f1 "${file%.tar.gz}.sha256")
             test "$(public_sha "$public/$file")" = "$expected"
             echo "$file public SHA256 $expected"
