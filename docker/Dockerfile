@@ -1,4 +1,4 @@
-ARG CANN_BASE_IMAGE=quay.io/ascend/cann:8.5.0-a3-ubuntu22.04-py3.10
+ARG CANN_BASE_IMAGE=quay.io/ascend/cann:9.2.2-a3-ubuntu22.04-py3.10
 FROM ${CANN_BASE_IMAGE}
 
 # Local builds use the public mirrors below; CI overrides them with the
@@ -8,13 +8,10 @@ ARG PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple
 ARG PIP_TRUSTED_HOST=repo.huaweicloud.com
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
-# torch/torch-npu are pinned per CANN release: the CANN 8.5.0/9.0.0 lines
-# (910b/a3) use torch 2.7.1 / torch-npu 2.7.1.post8, while CANN 9.1.0
-# (a5/Ascend 950) uses torch 2.12.0 / torch-npu 2.12.0. requirements.txt is
-# shared by every chip, so the pins live here — override at build time with
-# --build-arg TORCH_VERSION=2.12.0 --build-arg TORCH_NPU_VERSION=2.12.0.
+# Defaults for CANN 9.2.x on A3. For A5 (950), pass
+# --build-arg TORCH_VERSION=2.10.0 --build-arg TORCH_NPU_VERSION=2.10.0.post7.
 ARG TORCH_VERSION=2.7.1
-ARG TORCH_NPU_VERSION=2.7.1.post8
+ARG TORCH_NPU_VERSION=2.7.1.post11
 
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive

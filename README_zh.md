@@ -165,7 +165,7 @@ python3 setup_ascend.py install
 ```bash
 git clone https://github.com/triton-lang/triton-ascend.git && cd triton-ascend
 docker build \
---build-arg CANN_BASE_IMAGE=quay.io/ascend/cann:8.5.0-a3-ubuntu22.04-py3.10 \
+--build-arg CANN_BASE_IMAGE=quay.io/ascend/cann:9.2.2-a3-ubuntu22.04-py3.10 \
 -t triton-ascend-image:latest -f ./docker/Dockerfile .
 ```
 
